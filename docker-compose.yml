@@ -1,0 +1,18 @@
+services:
+  cccad-geometry-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cccad-geometry-service
+    ports:
+      - "50051:50051"
+    environment:
+      GEOMETRY_SERVICE_HOST: "0.0.0.0"
+      GEOMETRY_SERVICE_PORT: "50051"
+      GEOMETRY_STORAGE_ROOT: "/data/geometry"
+    volumes:
+      - geometry_data:/data/geometry
+    restart: unless-stopped
+
+volumes:
+  geometry_data:

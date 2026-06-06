@@ -1,0 +1,144 @@
+syntax = "proto3";
+
+package cccad.geometry.v1;
+
+option go_package = "github.com/cccad/geometry/gen/geometry/v1;geometryv1";
+
+service GeometryKernelService {
+  rpc Health(HealthRequest) returns (HealthResponse);
+  rpc BuildExtrude(BuildExtrudeRequest) returns (BuildExtrudeResponse);
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1;
+  string kernel_name = 2;
+  string kernel_version = 3;
+}
+
+message Vec2 {
+  double x = 1;
+  double y = 2;
+}
+
+message Vec3 {
+  double x = 1;
+  double y = 2;
+  double z = 3;
+}
+
+message SketchPlane {
+  string kind = 1;
+  Vec3 origin = 2;
+  Vec3 x_axis = 3;
+  Vec3 y_axis = 4;
+  Vec3 normal = 5;
+}
+
+message SketchProfile {
+  string profile_id = 1;
+  repeated ProfileCurve outer_loop = 2;
+  repeated ProfileLoop inner_loops = 3;
+}
+
+message ProfileLoop {
+  repeated ProfileCurve curves = 1;
+}
+
+message ProfileCurve {
+  string curve_id = 1;
+
+  oneof curve {
+    LineSegment2D line = 2;
+    ArcSegment2D arc = 3;
+    Circle2D circle = 4;
+  }
+}
+
+message LineSegment2D {
+  Vec2 start = 1;
+  Vec2 end = 2;
+}
+
+message ArcSegment2D {
+  Vec2 center = 1;
+  double radius = 2;
+  double start_angle_rad = 3;
+  double end_angle_rad = 4;
+  bool clockwise = 5;
+}
+
+message Circle2D {
+  Vec2 center = 1;
+  double radius = 2;
+}
+
+message ExtrudeParameters {
+  double depth = 1;
+  string direction = 2; // forward | backward | symmetric
+  string operation = 3; // MVP: new_body
+  double draft_angle_rad = 4;
+}
+
+message MeshOptions {
+  double linear_deflection = 1;
+  double angular_deflection_rad = 2;
+}
+
+message OutputOptions {
+  bool return_topology = 1;
+  bool write_brep = 2;
+  bool write_glb = 3;
+  bool write_mesh_json = 4;
+  bool write_step = 5;
+  bool write_stl = 6;
+  MeshOptions mesh = 7;
+  string storage_prefix = 8;
+}
+
+message ArtifactRef {
+  string kind = 1;
+  string storage_key = 2;
+  string content_type = 3;
+  int64 size_bytes = 4;
+  string sha256 = 5;
+}
+
+message Diagnostic {
+  string code = 1;
+  string severity = 2;
+  string message = 3;
+  string sketch_id = 4;
+  string profile_id = 5;
+  string curve_id = 6;
+  string feature_id = 7;
+}
+
+message BuildExtrudeRequest {
+  string request_id = 1;
+  string part_id = 2;
+  string document_version = 3;
+  string feature_id = 4;
+  string sketch_id = 5;
+  SketchPlane sketch_plane = 6;
+  SketchProfile profile = 7;
+  ExtrudeParameters parameters = 8;
+  OutputOptions output = 9;
+}
+
+message BuildExtrudeResponse {
+  string request_id = 1;
+  bool success = 2;
+  string part_id = 3;
+  string feature_id = 4;
+  repeated Diagnostic diagnostics = 5;
+  repeated ArtifactRef artifacts = 6;
+  repeated BodyResult bodies = 7;
+}
+
+message BodyResult {
+  string body_id = 1;
+  string created_by_feature_id = 2;
+  repeated ArtifactRef artifacts = 3;
+}
