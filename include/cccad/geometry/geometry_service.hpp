@@ -9,7 +9,7 @@
 
 namespace cccad::geometry {
 
-class GeometryKernelServiceImpl final : public cccad::geometry::v1::GeometryKernelService::Service {
+class GeometryKernelServiceImpl final : public cccad::geometry::v1::GeometrySolverService::Service {
 public:
   explicit GeometryKernelServiceImpl(ArtifactWriter artifact_writer);
 
@@ -19,7 +19,19 @@ public:
 
   grpc::Status BuildExtrude(grpc::ServerContext* context,
                             const cccad::geometry::v1::BuildExtrudeRequest* request,
-                            cccad::geometry::v1::BuildExtrudeResponse* response) override;
+                            cccad::geometry::v1::BuildFeatureResponse* response) override;
+
+  grpc::Status BuildHole(grpc::ServerContext* context,
+                         const cccad::geometry::v1::BuildHoleRequest* request,
+                         cccad::geometry::v1::BuildFeatureResponse* response) override;
+
+  grpc::Status BuildFillet(grpc::ServerContext* context,
+                           const cccad::geometry::v1::BuildFilletRequest* request,
+                           cccad::geometry::v1::BuildFeatureResponse* response) override;
+
+  grpc::Status BuildChamfer(grpc::ServerContext* context,
+                            const cccad::geometry::v1::BuildChamferRequest* request,
+                            cccad::geometry::v1::BuildFeatureResponse* response) override;
 
 private:
   ArtifactWriter artifact_writer_;

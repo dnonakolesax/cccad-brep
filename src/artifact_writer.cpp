@@ -5,6 +5,7 @@
 #include <sstream>
 #include <stdexcept>
 
+#include <BRep_Builder.hxx>
 #include <BRepTools.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRep_Tool.hxx>
@@ -43,10 +44,82 @@ void ensure_parent_dir(const std::filesystem::path& p) {
   }
 }
 
+bool is_brep_artifact(const cccad::geometry::v1::ArtifactRef& artifact) {
+  return artifact.kind() == "brep" && !artifact.storage_key().empty();
+}
+
 } // namespace
 
 ArtifactWriter::ArtifactWriter(std::filesystem::path storage_root)
     : storage_root_(std::move(storage_root)) {}
+
+std::vector<ArtifactWriteResult> ArtifactWriter::write_requested_artifacts(
+    const cccad::geometry::v1::BuildFilletRequest& request,
+    const TopoDS_Shape& shape) const {
+  std::vector<ArtifactWriteResult> results;
+
+  const auto& out = request.output();
+  const std::string body_id = request.target_body_id().empty() ? ("body-" + request.feature_id()) : request.target_body_id();
+  const std::string prefix = request.context().storage_prefix();
+
+  if (out.write_brep()) {
+    results.push_back(write_brep(join_storage_key(prefix, body_id + ".brep"), shape));
+  }
+
+  if (out.write_mesh_json()) {
+    double linear = out.mesh().linear_deflection() > 0.0 ? out.mesh().linear_deflection() : 0.1;
+    double angular = out.mesh().angular_deflection_rad() > 0.0 ? out.mesh().angular_deflection_rad() : 0.0872664626;
+    results.push_back(write_mesh_json(join_storage_key(prefix, body_id + ".mesh.json"), shape, linear, angular));
+  }
+
+  return results;
+}
+
+std::vector<ArtifactWriteResult> ArtifactWriter::write_requested_artifacts(
+    const cccad::geometry::v1::BuildChamferRequest& request,
+    const TopoDS_Shape& shape) const {
+  std::vector<ArtifactWriteResult> results;
+
+  const auto& out = request.output();
+  const std::string body_id = request.target_body_id().empty() ? ("body-" + request.feature_id()) : request.target_body_id();
+  const std::string prefix = request.context().storage_prefix();
+
+  if (out.write_brep()) {
+    results.push_back(write_brep(join_storage_key(prefix, body_id + ".brep"), shape));
+  }
+
+  if (out.write_mesh_json()) {
+    double linear = out.mesh().linear_deflection() > 0.0 ? out.mesh().linear_deflection() : 0.1;
+    double angular = out.mesh().angular_deflection_rad() > 0.0 ? out.mesh().angular_deflection_rad() : 0.0872664626;
+    results.push_back(write_mesh_json(join_storage_key(prefix, body_id + ".mesh.json"), shape, linear, angular));
+  }
+
+  return results;
+}
+
+std::vector<ArtifactWriteResult> ArtifactWriter::write_requested_artifacts(
+    const cccad::geometry::v1::BuildHoleRequest& request,
+    const TopoDS_Shape& shape) const {
+  std::vector<ArtifactWriteResult> results;
+
+  const auto& out = request.output();
+  const std::string body_id = request.parameters().target_body_id().empty()
+                                  ? ("body-" + request.feature_id())
+                                  : request.parameters().target_body_id();
+  const std::string prefix = request.context().storage_prefix();
+
+  if (out.write_brep()) {
+    results.push_back(write_brep(join_storage_key(prefix, body_id + ".brep"), shape));
+  }
+
+  if (out.write_mesh_json()) {
+    double linear = out.mesh().linear_deflection() > 0.0 ? out.mesh().linear_deflection() : 0.1;
+    double angular = out.mesh().angular_deflection_rad() > 0.0 ? out.mesh().angular_deflection_rad() : 0.0872664626;
+    results.push_back(write_mesh_json(join_storage_key(prefix, body_id + ".mesh.json"), shape, linear, angular));
+  }
+
+  return results;
+}
 
 std::vector<ArtifactWriteResult> ArtifactWriter::write_requested_artifacts(
     const cccad::geometry::v1::BuildExtrudeRequest& request,
@@ -55,7 +128,7 @@ std::vector<ArtifactWriteResult> ArtifactWriter::write_requested_artifacts(
 
   const auto& out = request.output();
   const std::string body_id = request.feature_id().empty() ? "body" : ("body-" + request.feature_id());
-  const std::string prefix = out.storage_prefix();
+  const std::string prefix = request.context().storage_prefix();
 
   if (out.write_brep()) {
     results.push_back(write_brep(join_storage_key(prefix, body_id + ".brep"), shape));
@@ -70,6 +143,29 @@ std::vector<ArtifactWriteResult> ArtifactWriter::write_requested_artifacts(
   // GLB/STEP/STL are intentionally not implemented in the MVP core.
   // The contract already has flags for them, but the service will ignore them until exporters are added.
   return results;
+}
+
+TopoDS_Shape ArtifactWriter::read_brep_artifact(const cccad::geometry::v1::ArtifactRef& artifact) const {
+  if (!is_brep_artifact(artifact)) {
+    throw std::runtime_error("body input must include a BREP artifact");
+  }
+
+  const auto path = path_for_key(storage_root_, artifact.storage_key());
+  if (!std::filesystem::exists(path)) {
+    throw std::runtime_error("BREP artifact does not exist: " + path.string());
+  }
+
+  TopoDS_Shape shape;
+  BRep_Builder builder;
+  if (!BRepTools::Read(shape, path.string().c_str(), builder)) {
+    throw std::runtime_error("failed to read BREP artifact: " + path.string());
+  }
+
+  if (shape.IsNull()) {
+    throw std::runtime_error("BREP artifact produced a null shape: " + path.string());
+  }
+
+  return shape;
 }
 
 ArtifactWriteResult ArtifactWriter::write_brep(const std::string& storage_key, const TopoDS_Shape& shape) const {
@@ -122,8 +218,8 @@ ArtifactWriteResult ArtifactWriter::write_mesh_json(const std::string& storage_k
     }
 
     const gp_Trsf trsf = loc.Transformation();
-    const int lower = tri->Nodes().Lower();
-    const int upper = tri->Nodes().Upper();
+    const int lower = 1;
+    const int upper = tri->NbNodes();
 
     for (int i = lower; i <= upper; ++i) {
       gp_Pnt p = tri->Node(i).Transformed(trsf);
@@ -134,10 +230,9 @@ ArtifactWriteResult ArtifactWriter::write_mesh_json(const std::string& storage_k
       out << "\n    [" << p.X() << ", " << p.Y() << ", " << p.Z() << "]";
     }
 
-    const auto& tris = tri->Triangles();
-    for (int i = tris.Lower(); i <= tris.Upper(); ++i) {
+    for (int i = 1; i <= tri->NbTriangles(); ++i) {
       int n1, n2, n3;
-      tris.Value(i).Get(n1, n2, n3);
+      tri->Triangle(i).Get(n1, n2, n3);
       triangles.push_back({vertex_offset + (n1 - lower), vertex_offset + (n2 - lower), vertex_offset + (n3 - lower)});
     }
 

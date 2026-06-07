@@ -10,6 +10,28 @@ find_package(gRPC REQUIRED)
 find_package(OpenCASCADE REQUIRED)
 find_package(Threads REQUIRED)
 
+set(CCCAD_OCCT_COMPONENTS
+  TKernel
+  TKMath
+  TKG2d
+  TKG3d
+  TKGeomBase
+  TKBRep
+  TKGeomAlgo
+  TKTopAlgo
+  TKPrim
+  TKBO
+  TKBool
+  TKFillet
+  TKMesh
+)
+
+set(CCCAD_OCCT_LIBRARIES)
+foreach(component IN LISTS CCCAD_OCCT_COMPONENTS)
+  find_library(CCCAD_OCCT_${component}_LIBRARY NAMES ${component} REQUIRED)
+  list(APPEND CCCAD_OCCT_LIBRARIES ${CCCAD_OCCT_${component}_LIBRARY})
+endforeach()
+
 set(PROTO_FILE ${CMAKE_CURRENT_SOURCE_DIR}/proto/geometry_kernel.proto)
 set(GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
 file(MAKE_DIRECTORY ${GENERATED_DIR})
@@ -44,7 +66,9 @@ target_link_libraries(cccad_geometry_proto PUBLIC protobuf::libprotobuf gRPC::gr
 add_executable(cccad-geometry-service
   src/main.cpp
   src/geometry_service.cpp
+  src/edge_modifier_builder.cpp
   src/extrude_builder.cpp
+  src/hole_builder.cpp
   src/artifact_writer.cpp
 )
 
@@ -59,5 +83,5 @@ target_link_libraries(cccad-geometry-service PRIVATE
   gRPC::grpc++
   protobuf::libprotobuf
   Threads::Threads
-  ${OpenCASCADE_LIBRARIES}
+  ${CCCAD_OCCT_LIBRARIES}
 )

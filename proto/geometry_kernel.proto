@@ -4,17 +4,36 @@ package cccad.geometry.v1;
 
 option go_package = "github.com/cccad/geometry/gen/geometry/v1;geometryv1";
 
-service GeometryKernelService {
+// Internal C++ geometry solver contract.
+// Source of truth remains in the Go backend: sketches, features, versions and permissions.
+// This service receives normalized 3D feature input and returns BREP/preview artifacts,
+// topology metadata and structured diagnostics.
+service GeometrySolverService {
   rpc Health(HealthRequest) returns (HealthResponse);
-  rpc BuildExtrude(BuildExtrudeRequest) returns (BuildExtrudeResponse);
+
+  // Build a single feature in isolation. Useful for preview, validation and MVP flow.
+  rpc BuildExtrude(BuildExtrudeRequest) returns (BuildFeatureResponse);
+  rpc BuildHole(BuildHoleRequest) returns (BuildFeatureResponse);
+  rpc BuildFillet(BuildFilletRequest) returns (BuildFeatureResponse);
+  rpc BuildChamfer(BuildChamferRequest) returns (BuildFeatureResponse);
+  rpc BuildPattern(BuildPatternRequest) returns (BuildFeatureResponse);
+  rpc BuildBoolean(BuildBooleanRequest) returns (BuildFeatureResponse);
+
+  // Canonical operation: rebuild an ordered feature history for a part.
+  rpc RebuildPart(RebuildPartRequest) returns (RebuildPartResponse);
+
+  // Topology queries used by frontend face/edge picking and sketch-on-face.
+  rpc GetTopology(GetTopologyRequest) returns (GetTopologyResponse);
+  rpc GetFacePlane(GetFacePlaneRequest) returns (GetFacePlaneResponse);
 }
 
 message HealthRequest {}
 
 message HealthResponse {
-  string status = 1;
-  string kernel_name = 2;
+  string status = 1;          // "ok"
+  string kernel_name = 2;     // e.g. "opencascade"
   string kernel_version = 3;
+  string service_version = 4;
 }
 
 message Vec2 {
@@ -28,12 +47,64 @@ message Vec3 {
   double z = 3;
 }
 
+message Axis3D {
+  Vec3 origin = 1;
+  Vec3 direction = 2;
+}
+
 message SketchPlane {
-  string kind = 1;
+  string kind = 1; // "XY", "XZ", "YZ", "CUSTOM", "FACE"
   Vec3 origin = 2;
   Vec3 x_axis = 3;
   Vec3 y_axis = 4;
   Vec3 normal = 5;
+}
+
+message KernelContext {
+  string request_id = 1;
+  string tenant_id = 2;
+  string workspace_id = 3;
+  string document_id = 4;
+  string part_id = 5;
+  int64 document_version = 6;
+  string storage_prefix = 7; // e.g. parts/{partId}/versions/{version}/
+}
+
+message OutputOptions {
+  bool return_topology = 1;
+  bool write_brep = 2;
+  bool write_glb = 3;
+  bool write_mesh_json = 4;
+  bool write_step = 5;
+  bool write_stl = 6;
+  MeshOptions mesh = 7;
+}
+
+message MeshOptions {
+  double linear_deflection = 1;      // e.g. 0.1
+  double angular_deflection_rad = 2; // e.g. 0.0872665 = 5 degrees
+}
+
+message ArtifactRef {
+  string kind = 1;         // "brep", "glb", "mesh_json", "step", "stl"
+  string storage_key = 2;
+  string content_type = 3;
+  int64 size_bytes = 4;
+  string sha256 = 5;
+}
+
+message Diagnostic {
+  string code = 1;
+  string severity = 2; // "error", "warning", "info"
+  string message = 3;
+
+  string feature_id = 4;
+  string sketch_id = 5;
+  string profile_id = 6;
+  string curve_id = 7;
+  string body_id = 8;
+  string face_id = 9;
+  string edge_id = 10;
 }
 
 message SketchProfile {
@@ -48,7 +119,6 @@ message ProfileLoop {
 
 message ProfileCurve {
   string curve_id = 1;
-
   oneof curve {
     LineSegment2D line = 2;
     ArcSegment2D arc = 3;
@@ -74,71 +144,293 @@ message Circle2D {
   double radius = 2;
 }
 
+enum ExtrudeDirection {
+  EXTRUDE_DIRECTION_UNSPECIFIED = 0;
+  EXTRUDE_DIRECTION_FORWARD = 1;
+  EXTRUDE_DIRECTION_BACKWARD = 2;
+  EXTRUDE_DIRECTION_SYMMETRIC = 3;
+  EXTRUDE_DIRECTION_THROUGH_ALL = 4;
+}
+
+enum SolidOperation {
+  SOLID_OPERATION_UNSPECIFIED = 0;
+  SOLID_OPERATION_NEW_BODY = 1;
+  SOLID_OPERATION_JOIN = 2;
+  SOLID_OPERATION_CUT = 3;
+  SOLID_OPERATION_INTERSECT = 4;
+}
+
 message ExtrudeParameters {
   double depth = 1;
-  string direction = 2; // forward | backward | symmetric
-  string operation = 3; // MVP: new_body
-  double draft_angle_rad = 4;
-}
-
-message MeshOptions {
-  double linear_deflection = 1;
-  double angular_deflection_rad = 2;
-}
-
-message OutputOptions {
-  bool return_topology = 1;
-  bool write_brep = 2;
-  bool write_glb = 3;
-  bool write_mesh_json = 4;
-  bool write_step = 5;
-  bool write_stl = 6;
-  MeshOptions mesh = 7;
-  string storage_prefix = 8;
-}
-
-message ArtifactRef {
-  string kind = 1;
-  string storage_key = 2;
-  string content_type = 3;
-  int64 size_bytes = 4;
-  string sha256 = 5;
-}
-
-message Diagnostic {
-  string code = 1;
-  string severity = 2;
-  string message = 3;
-  string sketch_id = 4;
-  string profile_id = 5;
-  string curve_id = 6;
-  string feature_id = 7;
+  ExtrudeDirection direction = 2;
+  SolidOperation operation = 3;
+  string target_body_id = 4; // required for JOIN/CUT/INTERSECT
+  double draft_angle_rad = 5;
 }
 
 message BuildExtrudeRequest {
-  string request_id = 1;
-  string part_id = 2;
-  string document_version = 3;
-  string feature_id = 4;
-  string sketch_id = 5;
-  SketchPlane sketch_plane = 6;
-  SketchProfile profile = 7;
-  ExtrudeParameters parameters = 8;
-  OutputOptions output = 9;
+  KernelContext context = 1;
+  string feature_id = 2;
+  string sketch_id = 3;
+  SketchPlane sketch_plane = 4;
+  SketchProfile profile = 5;
+  ExtrudeParameters parameters = 6;
+  repeated BodyInput existing_bodies = 7;
+  OutputOptions output = 8;
 }
 
-message BuildExtrudeResponse {
-  string request_id = 1;
-  bool success = 2;
-  string part_id = 3;
-  string feature_id = 4;
-  repeated Diagnostic diagnostics = 5;
-  repeated ArtifactRef artifacts = 6;
-  repeated BodyResult bodies = 7;
+message HoleParameters {
+  double diameter = 1;
+  double depth = 2;
+  bool through_all = 3;
+  ExtrudeDirection direction = 4;
+  string target_body_id = 5;
+  // Future: counterbore/countersink/thread parameters.
+}
+
+message BuildHoleRequest {
+  KernelContext context = 1;
+  string feature_id = 2;
+  string sketch_id = 3;
+  SketchPlane sketch_plane = 4;
+  Vec2 center = 5;
+  HoleParameters parameters = 6;
+  repeated BodyInput existing_bodies = 7;
+  OutputOptions output = 8;
+}
+
+enum BooleanOperation {
+  BOOLEAN_OPERATION_UNSPECIFIED = 0;
+  BOOLEAN_OPERATION_UNITE = 1;
+  BOOLEAN_OPERATION_SUBTRACT = 2;
+  BOOLEAN_OPERATION_INTERSECT = 3;
+}
+
+message BuildBooleanRequest {
+  KernelContext context = 1;
+  string feature_id = 2;
+  BooleanOperation operation = 3;
+  string target_body_id = 4;
+  repeated string tool_body_ids = 5;
+  repeated BodyInput existing_bodies = 6;
+  OutputOptions output = 7;
+}
+
+message BuildFilletRequest {
+  KernelContext context = 1;
+  string feature_id = 2;
+  string target_body_id = 3;
+  repeated string edge_refs = 4;
+  double radius = 5;
+  repeated BodyInput existing_bodies = 6;
+  OutputOptions output = 7;
+}
+
+message BuildChamferRequest {
+  KernelContext context = 1;
+  string feature_id = 2;
+  string target_body_id = 3;
+  repeated string edge_refs = 4;
+  double distance = 5;
+  repeated BodyInput existing_bodies = 6;
+  OutputOptions output = 7;
+}
+
+enum PatternKind {
+  PATTERN_KIND_UNSPECIFIED = 0;
+  PATTERN_KIND_LINEAR = 1;
+  PATTERN_KIND_CIRCULAR = 2;
+}
+
+message LinearPatternParameters {
+  Vec3 direction = 1;
+  int32 count = 2;
+  double spacing = 3;
+}
+
+message CircularPatternParameters {
+  Axis3D axis = 1;
+  int32 count = 2;
+  double angle_rad = 3;
+}
+
+message BuildPatternRequest {
+  KernelContext context = 1;
+  string feature_id = 2;
+  repeated string source_feature_ids = 3;
+  repeated string source_body_ids = 4;
+  repeated BodyInput existing_bodies = 5;
+  oneof parameters {
+    LinearPatternParameters linear = 6;
+    CircularPatternParameters circular = 7;
+  }
+  OutputOptions output = 8;
+}
+
+message BodyInput {
+  string body_id = 1;
+  ArtifactRef brep = 2;
 }
 
 message BodyResult {
   string body_id = 1;
   string created_by_feature_id = 2;
   repeated ArtifactRef artifacts = 3;
+}
+
+message BuildFeatureResponse {
+  string request_id = 1;
+  bool success = 2;
+  repeated Diagnostic diagnostics = 3;
+  repeated BodyResult bodies = 4;
+  repeated ArtifactRef artifacts = 5;
+  TopologySummary topology = 6;
+}
+
+message KernelSketch {
+  string sketch_id = 1;
+  SketchPlane plane = 2;
+  repeated SketchProfile profiles = 3;
+}
+
+message KernelFeature {
+  string feature_id = 1;
+  int32 order_index = 2;
+  bool suppressed = 3;
+  oneof feature {
+    ExtrudeFeature extrude = 4;
+    HoleFeature hole = 5;
+    BooleanFeature boolean = 6;
+    FilletFeature fillet = 7;
+    ChamferFeature chamfer = 8;
+    PatternFeature pattern = 9;
+  }
+}
+
+message ExtrudeFeature {
+  string sketch_id = 1;
+  string profile_id = 2;
+  ExtrudeParameters parameters = 3;
+}
+
+message HoleFeature {
+  string sketch_id = 1;
+  Vec2 center = 2;
+  HoleParameters parameters = 3;
+}
+
+message BooleanFeature {
+  BooleanOperation operation = 1;
+  string target_body_id = 2;
+  repeated string tool_body_ids = 3;
+}
+
+message FilletFeature {
+  string target_body_id = 1;
+  repeated string edge_refs = 2;
+  double radius = 3;
+}
+
+message ChamferFeature {
+  string target_body_id = 1;
+  repeated string edge_refs = 2;
+  double distance = 3;
+}
+
+message PatternFeature {
+  repeated string source_feature_ids = 1;
+  repeated string source_body_ids = 2;
+  oneof parameters {
+    LinearPatternParameters linear = 3;
+    CircularPatternParameters circular = 4;
+  }
+}
+
+message RebuildPartRequest {
+  KernelContext context = 1;
+  repeated KernelSketch sketches = 2;
+  repeated KernelFeature features = 3;
+  repeated BodyInput existing_bodies = 4;
+  OutputOptions output = 5;
+}
+
+message RebuildPartResponse {
+  string request_id = 1;
+  bool success = 2;
+  int64 document_version = 3;
+  repeated Diagnostic diagnostics = 4;
+  repeated BodyResult bodies = 5;
+  repeated ArtifactRef artifacts = 6;
+  TopologySummary topology = 7;
+}
+
+message GetTopologyRequest {
+  KernelContext context = 1;
+  repeated string body_ids = 2;
+  repeated BodyInput existing_bodies = 3;
+}
+
+message GetTopologyResponse {
+  bool success = 1;
+  repeated Diagnostic diagnostics = 2;
+  TopologySummary topology = 3;
+}
+
+message GetFacePlaneRequest {
+  KernelContext context = 1;
+  string body_id = 2;
+  string face_id = 3;
+  BodyInput body = 4;
+}
+
+message GetFacePlaneResponse {
+  bool success = 1;
+  repeated Diagnostic diagnostics = 2;
+  string surface_type = 3; // "plane", "cylinder", etc.
+  SketchPlane plane = 4;
+}
+
+message TopologySummary {
+  repeated Body bodies = 1;
+}
+
+message Body {
+  string body_id = 1;
+  string stable_ref = 2;
+  repeated Shell shells = 3;
+  repeated Vertex vertices = 4;
+}
+
+message Shell {
+  string shell_id = 1;
+  string stable_ref = 2;
+  repeated Face faces = 3;
+}
+
+message Face {
+  string face_id = 1;
+  string stable_ref = 2;
+  string surface_type = 3; // "plane", "cylinder", "cone", "sphere", "bspline", "unknown"
+  SketchPlane plane = 4;   // set when surface_type = "plane"
+  repeated Loop loops = 5;
+}
+
+message Loop {
+  string loop_id = 1;
+  string stable_ref = 2;
+  repeated Edge edges = 3;
+}
+
+message Edge {
+  string edge_id = 1;
+  string stable_ref = 2;
+  string curve_type = 3; // "line", "circle", "ellipse", "bspline", "unknown"
+  string start_vertex_id = 4;
+  string end_vertex_id = 5;
+}
+
+message Vertex {
+  string vertex_id = 1;
+  string stable_ref = 2;
+  Vec3 point = 3;
 }

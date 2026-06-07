@@ -1,6 +1,7 @@
 #include "cccad/geometry/extrude_builder.hpp"
 #include "cccad/geometry/types.hpp"
 
+#include <cmath>
 #include <stdexcept>
 #include <string>
 
@@ -112,8 +113,13 @@ TopoDS_Shape build_extrude_shape(const cccad::geometry::v1::BuildExtrudeRequest&
     throw std::runtime_error("extrude depth must be a positive finite value");
   }
 
-  if (!params.operation().empty() && params.operation() != "new_body") {
-    throw std::runtime_error("only operation=new_body is supported in MVP geometry service");
+  if (params.operation() != cccad::geometry::v1::SOLID_OPERATION_UNSPECIFIED &&
+      params.operation() != cccad::geometry::v1::SOLID_OPERATION_NEW_BODY) {
+    throw std::runtime_error("only operation=SOLID_OPERATION_NEW_BODY is supported in MVP geometry service");
+  }
+
+  if (params.draft_angle_rad() != 0.0) {
+    throw std::runtime_error("draft angle is declared in contract but not implemented in MVP extrude");
   }
 
   const Vec3d n = normalize(from_proto(request.sketch_plane().normal()), "normal");
@@ -122,18 +128,25 @@ TopoDS_Shape build_extrude_shape(const cccad::geometry::v1::BuildExtrudeRequest&
   TopoDS_Shape base_face = make_face_from_profile(request.sketch_plane(), request.profile());
 
   gp_Vec prism_vec;
-  const std::string direction = params.direction().empty() ? "forward" : params.direction();
 
-  if (direction == "forward") {
-    prism_vec = to_gp_vec(Vec3d{n.x * depth, n.y * depth, n.z * depth});
-  } else if (direction == "backward") {
-    prism_vec = to_gp_vec(Vec3d{-n.x * depth, -n.y * depth, -n.z * depth});
-  } else if (direction == "symmetric") {
-    const gp_Vec shift = to_gp_vec(Vec3d{-n.x * depth / 2.0, -n.y * depth / 2.0, -n.z * depth / 2.0});
-    base_face = translate_shape(base_face, shift);
-    prism_vec = to_gp_vec(Vec3d{n.x * depth, n.y * depth, n.z * depth});
-  } else {
-    throw std::runtime_error("unsupported extrude direction: " + direction);
+  switch (params.direction()) {
+    case cccad::geometry::v1::EXTRUDE_DIRECTION_UNSPECIFIED:
+    case cccad::geometry::v1::EXTRUDE_DIRECTION_FORWARD:
+      prism_vec = to_gp_vec(Vec3d{n.x * depth, n.y * depth, n.z * depth});
+      break;
+    case cccad::geometry::v1::EXTRUDE_DIRECTION_BACKWARD:
+      prism_vec = to_gp_vec(Vec3d{-n.x * depth, -n.y * depth, -n.z * depth});
+      break;
+    case cccad::geometry::v1::EXTRUDE_DIRECTION_SYMMETRIC: {
+      const gp_Vec shift = to_gp_vec(Vec3d{-n.x * depth / 2.0, -n.y * depth / 2.0, -n.z * depth / 2.0});
+      base_face = translate_shape(base_face, shift);
+      prism_vec = to_gp_vec(Vec3d{n.x * depth, n.y * depth, n.z * depth});
+      break;
+    }
+    case cccad::geometry::v1::EXTRUDE_DIRECTION_THROUGH_ALL:
+      throw std::runtime_error("through-all extrude is declared in contract but not implemented in MVP extrude");
+    default:
+      throw std::runtime_error("unsupported extrude direction enum value");
   }
 
   BRepPrimAPI_MakePrism prism_maker(base_face, prism_vec, false, true);
