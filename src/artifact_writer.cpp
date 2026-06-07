@@ -98,6 +98,50 @@ std::vector<ArtifactWriteResult> ArtifactWriter::write_requested_artifacts(
 }
 
 std::vector<ArtifactWriteResult> ArtifactWriter::write_requested_artifacts(
+    const cccad::geometry::v1::BuildBooleanRequest& request,
+    const TopoDS_Shape& shape) const {
+  std::vector<ArtifactWriteResult> results;
+
+  const auto& out = request.output();
+  const std::string body_id = request.target_body_id().empty() ? ("body-" + request.feature_id()) : request.target_body_id();
+  const std::string prefix = request.context().storage_prefix();
+
+  if (out.write_brep()) {
+    results.push_back(write_brep(join_storage_key(prefix, body_id + ".brep"), shape));
+  }
+
+  if (out.write_mesh_json()) {
+    double linear = out.mesh().linear_deflection() > 0.0 ? out.mesh().linear_deflection() : 0.1;
+    double angular = out.mesh().angular_deflection_rad() > 0.0 ? out.mesh().angular_deflection_rad() : 0.0872664626;
+    results.push_back(write_mesh_json(join_storage_key(prefix, body_id + ".mesh.json"), shape, linear, angular));
+  }
+
+  return results;
+}
+
+std::vector<ArtifactWriteResult> ArtifactWriter::write_requested_artifacts(
+    const cccad::geometry::v1::BuildPatternRequest& request,
+    const TopoDS_Shape& shape) const {
+  std::vector<ArtifactWriteResult> results;
+
+  const auto& out = request.output();
+  const std::string body_id = request.feature_id().empty() ? "body-pattern" : ("body-" + request.feature_id());
+  const std::string prefix = request.context().storage_prefix();
+
+  if (out.write_brep()) {
+    results.push_back(write_brep(join_storage_key(prefix, body_id + ".brep"), shape));
+  }
+
+  if (out.write_mesh_json()) {
+    double linear = out.mesh().linear_deflection() > 0.0 ? out.mesh().linear_deflection() : 0.1;
+    double angular = out.mesh().angular_deflection_rad() > 0.0 ? out.mesh().angular_deflection_rad() : 0.0872664626;
+    results.push_back(write_mesh_json(join_storage_key(prefix, body_id + ".mesh.json"), shape, linear, angular));
+  }
+
+  return results;
+}
+
+std::vector<ArtifactWriteResult> ArtifactWriter::write_requested_artifacts(
     const cccad::geometry::v1::BuildHoleRequest& request,
     const TopoDS_Shape& shape) const {
   std::vector<ArtifactWriteResult> results;

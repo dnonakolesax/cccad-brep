@@ -33,6 +33,14 @@ public:
                             const cccad::geometry::v1::BuildChamferRequest* request,
                             cccad::geometry::v1::BuildFeatureResponse* response) override;
 
+  grpc::Status BuildBoolean(grpc::ServerContext* context,
+                            const cccad::geometry::v1::BuildBooleanRequest* request,
+                            cccad::geometry::v1::BuildFeatureResponse* response) override;
+
+  grpc::Status BuildPattern(grpc::ServerContext* context,
+                            const cccad::geometry::v1::BuildPatternRequest* request,
+                            cccad::geometry::v1::BuildFeatureResponse* response) override;
+
 private:
   ArtifactWriter artifact_writer_;
 };

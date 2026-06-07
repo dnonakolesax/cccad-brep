@@ -65,6 +65,8 @@ target_link_libraries(cccad_geometry_proto PUBLIC protobuf::libprotobuf gRPC::gr
 
 add_executable(cccad-geometry-service
   src/main.cpp
+  src/boolean_builder.cpp
+  src/pattern_builder.cpp
   src/geometry_service.cpp
   src/edge_modifier_builder.cpp
   src/extrude_builder.cpp
