@@ -67,6 +67,7 @@ add_executable(cccad-geometry-service
   src/main.cpp
   src/boolean_builder.cpp
   src/pattern_builder.cpp
+  src/topology_builder.cpp
   src/geometry_service.cpp
   src/edge_modifier_builder.cpp
   src/extrude_builder.cpp

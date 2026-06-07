@@ -44,6 +44,11 @@ public:
       const cccad::geometry::v1::BuildPatternRequest& request,
       const TopoDS_Shape& shape) const;
 
+  std::vector<ArtifactWriteResult> write_requested_artifacts(
+      const cccad::geometry::v1::RebuildPartRequest& request,
+      const std::string& body_id,
+      const TopoDS_Shape& shape) const;
+
   TopoDS_Shape read_brep_artifact(const cccad::geometry::v1::ArtifactRef& artifact) const;
 
 private:

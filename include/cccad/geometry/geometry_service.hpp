@@ -41,6 +41,18 @@ public:
                             const cccad::geometry::v1::BuildPatternRequest* request,
                             cccad::geometry::v1::BuildFeatureResponse* response) override;
 
+  grpc::Status RebuildPart(grpc::ServerContext* context,
+                           const cccad::geometry::v1::RebuildPartRequest* request,
+                           cccad::geometry::v1::RebuildPartResponse* response) override;
+
+  grpc::Status GetTopology(grpc::ServerContext* context,
+                           const cccad::geometry::v1::GetTopologyRequest* request,
+                           cccad::geometry::v1::GetTopologyResponse* response) override;
+
+  grpc::Status GetFacePlane(grpc::ServerContext* context,
+                            const cccad::geometry::v1::GetFacePlaneRequest* request,
+                            cccad::geometry::v1::GetFacePlaneResponse* response) override;
+
 private:
   ArtifactWriter artifact_writer_;
 };

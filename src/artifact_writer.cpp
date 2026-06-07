@@ -142,6 +142,29 @@ std::vector<ArtifactWriteResult> ArtifactWriter::write_requested_artifacts(
 }
 
 std::vector<ArtifactWriteResult> ArtifactWriter::write_requested_artifacts(
+    const cccad::geometry::v1::RebuildPartRequest& request,
+    const std::string& body_id,
+    const TopoDS_Shape& shape) const {
+  std::vector<ArtifactWriteResult> results;
+
+  const auto& out = request.output();
+  const std::string output_body_id = body_id.empty() ? "body" : body_id;
+  const std::string prefix = request.context().storage_prefix();
+
+  if (out.write_brep()) {
+    results.push_back(write_brep(join_storage_key(prefix, output_body_id + ".brep"), shape));
+  }
+
+  if (out.write_mesh_json()) {
+    double linear = out.mesh().linear_deflection() > 0.0 ? out.mesh().linear_deflection() : 0.1;
+    double angular = out.mesh().angular_deflection_rad() > 0.0 ? out.mesh().angular_deflection_rad() : 0.0872664626;
+    results.push_back(write_mesh_json(join_storage_key(prefix, output_body_id + ".mesh.json"), shape, linear, angular));
+  }
+
+  return results;
+}
+
+std::vector<ArtifactWriteResult> ArtifactWriter::write_requested_artifacts(
     const cccad::geometry::v1::BuildHoleRequest& request,
     const TopoDS_Shape& shape) const {
   std::vector<ArtifactWriteResult> results;
