@@ -5,14 +5,21 @@ services:
       dockerfile: Dockerfile
     container_name: cccad-geometry-service
     ports:
-      - "50051:50051"
+      - "50052:50052"
     environment:
       GEOMETRY_SERVICE_HOST: "0.0.0.0"
-      GEOMETRY_SERVICE_PORT: "50051"
+      GEOMETRY_SERVICE_PORT: "50052"
       GEOMETRY_STORAGE_ROOT: "/data/geometry"
     volumes:
       - geometry_data:/data/geometry
+    networks:
+      - kernelnet
     restart: unless-stopped
 
 volumes:
   geometry_data:
+
+
+networks:
+  kernelnet:
+    driver: bridge

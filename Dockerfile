@@ -1,22 +1,30 @@
 # syntax=docker/dockerfile:1.7
 
-FROM ubuntu:24.04 AS builder
+FROM debian:13-slim as builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    cmake \
-    ninja-build \
-    pkg-config \
-    git \
-    ca-certificates \
-    protobuf-compiler \
-    protobuf-compiler-grpc \
-    libprotobuf-dev \
-    libgrpc++-dev \
-    libopencascade-dev \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get clean \
+    && apt-get update -o Acquire::Retries=5 \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+        ninja-build \
+        pkg-config \
+        git \
+        ca-certificates \
+        protobuf-compiler \
+        libprotobuf-dev \
+        libgrpc++-dev \
+        protobuf-compiler-grpc \
+        libocct-foundation-dev \
+        libocct-modeling-data-dev \
+        libocct-modeling-algorithms-dev \
+        libocct-data-exchange-dev \
+        libocct-ocaf-dev \
+        nlohmann-json3-dev \
+        libspdlog-dev \
+        libfmt-dev
 
 WORKDIR /app
 
@@ -28,7 +36,7 @@ COPY src ./src
 RUN cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 RUN cmake --build build --target cccad-geometry-service -j"$(nproc)"
 
-FROM ubuntu:24.04 AS runtime
+FROM debian:13-slim AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -38,7 +46,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libprotobuf-dev \
     libgrpc++-dev \
-    libopencascade-dev \
+    libocct-foundation-dev \
+    libocct-modeling-data-dev \
+    libocct-modeling-algorithms-dev \
+    libocct-data-exchange-dev \
+    libocct-ocaf-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
