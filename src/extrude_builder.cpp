@@ -15,7 +15,9 @@
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Wire.hxx>
 #include <gp_Ax2.hxx>
+#include <gp_Ax3.hxx>
 #include <gp_Circ.hxx>
+#include <gp_Pln.hxx>
 #include <gp_Trsf.hxx>
 
 namespace cccad::geometry {
@@ -81,17 +83,62 @@ TopoDS_Wire make_wire_from_curves(
   return polygon.Wire();
 }
 
+double signed_area_2d(const google::protobuf::RepeatedPtrField<cccad::geometry::v1::ProfileCurve>& curves,
+                      const std::string& loop_name) {
+  if (curves.size() == 1 && curves.Get(0).has_circle()) {
+    constexpr double pi = 3.141592653589793238462643383279502884;
+    const double radius = curves.Get(0).circle().radius();
+    return pi * radius * radius;
+  }
+
+  double area = 0.0;
+  for (const auto& curve : curves) {
+    if (!curve.has_line()) {
+      throw std::runtime_error(loop_name + " contains an unsupported curve for orientation");
+    }
+
+    const auto& line = curve.line();
+    area += line.start().x() * line.end().y() - line.end().x() * line.start().y();
+  }
+
+  area *= 0.5;
+  constexpr double eps = 1.0e-12;
+  if (!std::isfinite(area) || std::abs(area) < eps) {
+    throw std::runtime_error(loop_name + " must enclose a non-zero area");
+  }
+
+  return area;
+}
+
+TopoDS_Wire make_oriented_wire(
+    const cccad::geometry::v1::SketchPlane& plane,
+    const google::protobuf::RepeatedPtrField<cccad::geometry::v1::ProfileCurve>& curves,
+    const std::string& loop_name,
+    bool want_counter_clockwise) {
+  TopoDS_Wire wire = make_wire_from_curves(plane, curves, loop_name);
+  const bool is_counter_clockwise = signed_area_2d(curves, loop_name) > 0.0;
+  if (is_counter_clockwise != want_counter_clockwise) {
+    wire.Reverse();
+  }
+  return wire;
+}
+
 TopoDS_Face make_face_from_profile(const cccad::geometry::v1::SketchPlane& plane,
                                    const cccad::geometry::v1::SketchProfile& profile) {
-  TopoDS_Wire outer_wire = make_wire_from_curves(plane, profile.outer_loop(), "profile.outer_loop");
-  BRepBuilderAPI_MakeFace face_maker(outer_wire);
+  const gp_Pnt origin = point_on_plane(plane, 0.0, 0.0);
+  const gp_Dir normal = to_gp_dir(normalize(from_proto(plane.normal()), "normal"));
+  const gp_Dir x_axis = to_gp_dir(normalize(from_proto(plane.x_axis()), "x_axis"));
+  const gp_Pln sketch_surface(gp_Ax3(origin, normal, x_axis));
+
+  TopoDS_Wire outer_wire = make_oriented_wire(plane, profile.outer_loop(), "profile.outer_loop", true);
+  BRepBuilderAPI_MakeFace face_maker(sketch_surface, outer_wire, true);
 
   for (int i = 0; i < profile.inner_loops_size(); ++i) {
-    TopoDS_Wire inner_wire = make_wire_from_curves(
+    TopoDS_Wire inner_wire = make_oriented_wire(
         plane,
         profile.inner_loops(i).curves(),
-        "profile.inner_loops[" + std::to_string(i) + "].curves");
-    inner_wire.Reverse();
+        "profile.inner_loops[" + std::to_string(i) + "].curves",
+        false);
     face_maker.Add(inner_wire);
   }
 
