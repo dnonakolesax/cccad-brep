@@ -21,7 +21,7 @@ std::string getenv_or(const char* name, const std::string& fallback) {
 
 int main() {
   const std::string host = getenv_or("GEOMETRY_SERVICE_HOST", "0.0.0.0");
-  const std::string port = getenv_or("GEOMETRY_SERVICE_PORT", "50051");
+  const std::string port = getenv_or("GEOMETRY_SERVICE_PORT", "50052");
   const std::string storage_root = getenv_or("GEOMETRY_STORAGE_ROOT", "/data/geometry");
 
   std::filesystem::create_directories(storage_root);
