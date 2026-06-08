@@ -22,18 +22,16 @@ namespace cccad::geometry {
 
 namespace {
 
-TopoDS_Wire make_wire_from_profile(const cccad::geometry::v1::SketchPlane& plane,
-                                   const cccad::geometry::v1::SketchProfile& profile) {
-  if (profile.outer_loop_size() == 0) {
-    throw std::runtime_error("profile.outer_loop must not be empty");
+TopoDS_Wire make_wire_from_curves(
+    const cccad::geometry::v1::SketchPlane& plane,
+    const google::protobuf::RepeatedPtrField<cccad::geometry::v1::ProfileCurve>& curves,
+    const std::string& loop_name) {
+  if (curves.empty()) {
+    throw std::runtime_error(loop_name + " must not be empty");
   }
 
-  if (profile.inner_loops_size() > 0) {
-    throw std::runtime_error("inner loops are not supported in MVP extrude");
-  }
-
-  if (profile.outer_loop_size() == 1 && profile.outer_loop(0).has_circle()) {
-    const auto& circle = profile.outer_loop(0).circle();
+  if (curves.size() == 1 && curves.Get(0).has_circle()) {
+    const auto& circle = curves.Get(0).circle();
     if (circle.radius() <= 0.0) {
       throw std::runtime_error("circle radius must be positive");
     }
@@ -55,7 +53,7 @@ TopoDS_Wire make_wire_from_profile(const cccad::geometry::v1::SketchPlane& plane
   }
 
   BRepBuilderAPI_MakePolygon polygon;
-  for (const auto& curve : profile.outer_loop()) {
+  for (const auto& curve : curves) {
     if (!curve.has_line()) {
       if (curve.has_arc()) {
         throw std::runtime_error("arc segments are declared in contract but not implemented in MVP extrude");
@@ -72,7 +70,7 @@ TopoDS_Wire make_wire_from_profile(const cccad::geometry::v1::SketchPlane& plane
 
   // Close by last segment end. BRepBuilderAPI_MakePolygon::Close() also closes to first point,
   // but adding the end point gives clearer failure modes for invalid ordered loops.
-  const auto& last_line = profile.outer_loop(profile.outer_loop_size() - 1).line();
+  const auto& last_line = curves.Get(curves.size() - 1).line();
   polygon.Add(point_on_plane(plane, last_line.end().x(), last_line.end().y()));
   polygon.Close();
 
@@ -85,10 +83,20 @@ TopoDS_Wire make_wire_from_profile(const cccad::geometry::v1::SketchPlane& plane
 
 TopoDS_Face make_face_from_profile(const cccad::geometry::v1::SketchPlane& plane,
                                    const cccad::geometry::v1::SketchProfile& profile) {
-  TopoDS_Wire wire = make_wire_from_profile(plane, profile);
-  BRepBuilderAPI_MakeFace face_maker(wire);
+  TopoDS_Wire outer_wire = make_wire_from_curves(plane, profile.outer_loop(), "profile.outer_loop");
+  BRepBuilderAPI_MakeFace face_maker(outer_wire);
+
+  for (int i = 0; i < profile.inner_loops_size(); ++i) {
+    TopoDS_Wire inner_wire = make_wire_from_curves(
+        plane,
+        profile.inner_loops(i).curves(),
+        "profile.inner_loops[" + std::to_string(i) + "].curves");
+    inner_wire.Reverse();
+    face_maker.Add(inner_wire);
+  }
+
   if (!face_maker.IsDone()) {
-    throw std::runtime_error("failed to make face from profile wire");
+    throw std::runtime_error("failed to make face from profile loops");
   }
   return face_maker.Face();
 }
