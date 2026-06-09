@@ -7,9 +7,11 @@
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BRep_Tool.hxx>
+#include <BRepTools.hxx>
 #include <BRepTools_WireExplorer.hxx>
 #include <GeomAbs_CurveType.hxx>
 #include <GeomAbs_SurfaceType.hxx>
+#include <TopAbs_Orientation.hxx>
 #include <TopAbs_ShapeEnum.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
@@ -20,6 +22,8 @@
 #include <TopoDS_Shell.hxx>
 #include <TopoDS_Vertex.hxx>
 #include <TopoDS_Wire.hxx>
+#include <gp_Circ.hxx>
+#include <gp_Cylinder.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pln.hxx>
 #include <gp_Pnt.hxx>
@@ -42,6 +46,12 @@ void set_vec3(cccad::geometry::v1::Vec3* out, const gp_Dir& dir) {
   out->set_x(dir.X());
   out->set_y(dir.Y());
   out->set_z(dir.Z());
+}
+
+void set_vec3(cccad::geometry::v1::Vec3* out, const gp_XYZ& xyz) {
+  out->set_x(xyz.X());
+  out->set_y(xyz.Y());
+  out->set_z(xyz.Z());
 }
 
 std::string surface_type(const TopoDS_Face& face) {
@@ -105,6 +115,19 @@ void set_plane_if_planar(const TopoDS_Face& face, cccad::geometry::v1::Face* out
   set_plane_from_occt(plane, out->mutable_plane());
 }
 
+void set_cylinder_if_cylindrical(const TopoDS_Face& face, cccad::geometry::v1::Face* out) {
+  BRepAdaptor_Surface surface(face, true);
+  if (surface.GetType() != GeomAbs_Cylinder) {
+    return;
+  }
+
+  const gp_Cylinder cylinder = surface.Cylinder();
+  auto* out_cylinder = out->mutable_cylinder();
+  set_vec3(out_cylinder->mutable_origin(), cylinder.Axis().Location());
+  set_vec3(out_cylinder->mutable_axis(), cylinder.Axis().Direction());
+  out_cylinder->set_radius(cylinder.Radius());
+}
+
 std::string curve_type(const TopoDS_Edge& edge) {
   BRepAdaptor_Curve curve(edge);
   switch (curve.GetType()) {
@@ -116,6 +139,21 @@ std::string curve_type(const TopoDS_Edge& edge) {
       return "ellipse";
     case GeomAbs_BSplineCurve:
       return "bspline";
+    default:
+      return "unknown";
+  }
+}
+
+std::string orientation_type(const TopoDS_Shape& shape) {
+  switch (shape.Orientation()) {
+    case TopAbs_FORWARD:
+      return "forward";
+    case TopAbs_REVERSED:
+      return "reversed";
+    case TopAbs_INTERNAL:
+      return "internal";
+    case TopAbs_EXTERNAL:
+      return "external";
     default:
       return "unknown";
   }
@@ -134,6 +172,35 @@ std::string vertex_id_for(const TopTools_IndexedMapOfShape& vertex_map, const To
   return indexed_id("vertex", index);
 }
 
+void set_circle_if_circular(const TopoDS_Edge& edge, cccad::geometry::v1::Edge* out) {
+  BRepAdaptor_Curve curve(edge);
+  if (curve.GetType() != GeomAbs_Circle) {
+    return;
+  }
+
+  const gp_Circ circle = curve.Circle();
+  auto* out_circle = out->mutable_circle();
+  set_vec3(out_circle->mutable_center(), circle.Location());
+  set_vec3(out_circle->mutable_normal(), circle.Axis().Direction());
+  out_circle->set_radius(circle.Radius());
+}
+
+bool loop_edges_closed(const cccad::geometry::v1::Loop& loop) {
+  if (loop.edges_size() == 0) {
+    return false;
+  }
+
+  for (int i = 0; i < loop.edges_size(); ++i) {
+    const auto& current = loop.edges(i);
+    const auto& next = loop.edges((i + 1) % loop.edges_size());
+    if (current.end_vertex_id() != next.start_vertex_id()) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 void add_edge(const std::string& body_ref,
               const TopTools_IndexedMapOfShape& edge_map,
               const TopTools_IndexedMapOfShape& vertex_map,
@@ -144,12 +211,14 @@ void add_edge(const std::string& body_ref,
   out_edge->set_edge_id(indexed_id("edge", edge_index));
   out_edge->set_stable_ref(body_ref + "/edge-" + std::to_string(edge_index));
   out_edge->set_curve_type(curve_type(edge));
+  out_edge->set_orientation(orientation_type(edge));
 
   TopoDS_Vertex start;
   TopoDS_Vertex end;
   TopExp::Vertices(edge, start, end, true);
   out_edge->set_start_vertex_id(vertex_id_for(vertex_map, start));
   out_edge->set_end_vertex_id(vertex_id_for(vertex_map, end));
+  set_circle_if_circular(edge, out_edge);
 }
 
 void add_face(const std::string& body_ref,
@@ -164,14 +233,17 @@ void add_face(const std::string& body_ref,
   out_face->set_stable_ref(body_ref + "/face-" + std::to_string(face_index));
   out_face->set_surface_type(surface_type(face));
   set_plane_if_planar(face, out_face);
+  set_cylinder_if_cylindrical(face, out_face);
 
   int loop_index = 0;
+  const TopoDS_Wire outer_wire = BRepTools::OuterWire(face);
   for (TopExp_Explorer wire_exp(face, TopAbs_WIRE); wire_exp.More(); wire_exp.Next()) {
     ++loop_index;
     const TopoDS_Wire wire = TopoDS::Wire(wire_exp.Current());
     auto* loop = out_face->add_loops();
     loop->set_loop_id(indexed_id("loop", loop_index));
     loop->set_stable_ref(out_face->stable_ref() + "/loop-" + std::to_string(loop_index));
+    loop->set_role(!outer_wire.IsNull() && wire.IsSame(outer_wire) ? "outer" : "inner");
 
     bool added_edge = false;
     for (BRepTools_WireExplorer edge_exp(wire, face); edge_exp.More(); edge_exp.Next()) {
@@ -184,6 +256,19 @@ void add_face(const std::string& body_ref,
         add_edge(body_ref, edge_map, vertex_map, TopoDS::Edge(edge_exp.Current()), loop);
       }
     }
+
+    loop->set_closed(loop_edges_closed(*loop));
+  }
+
+  if (loop_index == 0) {
+    auto* loop = out_face->add_loops();
+    loop->set_loop_id("loop-1");
+    loop->set_stable_ref(out_face->stable_ref() + "/loop-1");
+    loop->set_role("outer");
+    for (TopExp_Explorer edge_exp(face, TopAbs_EDGE); edge_exp.More(); edge_exp.Next()) {
+      add_edge(body_ref, edge_map, vertex_map, TopoDS::Edge(edge_exp.Current()), loop);
+    }
+    loop->set_closed(loop_edges_closed(*loop));
   }
 }
 

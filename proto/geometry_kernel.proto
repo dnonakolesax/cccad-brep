@@ -413,12 +413,15 @@ message Face {
   string surface_type = 3; // "plane", "cylinder", "cone", "sphere", "bspline", "unknown"
   SketchPlane plane = 4;   // set when surface_type = "plane"
   repeated Loop loops = 5;
+  CylinderSurface cylinder = 6; // set when surface_type = "cylinder"
 }
 
 message Loop {
   string loop_id = 1;
   string stable_ref = 2;
   repeated Edge edges = 3;
+  string role = 4; // "outer", "inner", "unknown"
+  bool closed = 5;
 }
 
 message Edge {
@@ -427,10 +430,24 @@ message Edge {
   string curve_type = 3; // "line", "circle", "ellipse", "bspline", "unknown"
   string start_vertex_id = 4;
   string end_vertex_id = 5;
+  string orientation = 6; // "forward", "reversed", "internal", "external", "unknown"
+  CircleCurve circle = 7; // set when curve_type = "circle"
 }
 
 message Vertex {
   string vertex_id = 1;
   string stable_ref = 2;
   Vec3 point = 3;
+}
+
+message CylinderSurface {
+  Vec3 origin = 1;
+  Vec3 axis = 2;
+  double radius = 3;
+}
+
+message CircleCurve {
+  Vec3 center = 1;
+  Vec3 normal = 2;
+  double radius = 3;
 }

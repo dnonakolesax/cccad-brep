@@ -294,6 +294,10 @@ grpc::Status GeometryKernelServiceImpl::BuildExtrude(
       body_artifact->CopyFrom(*top_artifact);
     }
 
+    if (request->output().return_topology()) {
+      add_shape_topology(body->body_id(), shape, response->mutable_topology());
+    }
+
     response->set_success(true);
     return grpc::Status::OK;
   } catch (const std::exception& ex) {
@@ -328,6 +332,10 @@ grpc::Status GeometryKernelServiceImpl::BuildHole(
 
       auto* body_artifact = body->add_artifacts();
       body_artifact->CopyFrom(*top_artifact);
+    }
+
+    if (request->output().return_topology()) {
+      add_shape_topology(body->body_id(), shape, response->mutable_topology());
     }
 
     response->set_success(true);
@@ -366,6 +374,10 @@ grpc::Status GeometryKernelServiceImpl::BuildFillet(
       body_artifact->CopyFrom(*top_artifact);
     }
 
+    if (request->output().return_topology()) {
+      add_shape_topology(body->body_id(), shape, response->mutable_topology());
+    }
+
     response->set_success(true);
     return grpc::Status::OK;
   } catch (const std::exception& ex) {
@@ -400,6 +412,10 @@ grpc::Status GeometryKernelServiceImpl::BuildChamfer(
 
       auto* body_artifact = body->add_artifacts();
       body_artifact->CopyFrom(*top_artifact);
+    }
+
+    if (request->output().return_topology()) {
+      add_shape_topology(body->body_id(), shape, response->mutable_topology());
     }
 
     response->set_success(true);
@@ -450,6 +466,10 @@ grpc::Status GeometryKernelServiceImpl::BuildBoolean(
       body_artifact->CopyFrom(*top_artifact);
     }
 
+    if (request->output().return_topology()) {
+      add_shape_topology(body->body_id(), shape, response->mutable_topology());
+    }
+
     response->set_success(true);
     return grpc::Status::OK;
   } catch (const std::exception& ex) {
@@ -489,6 +509,10 @@ grpc::Status GeometryKernelServiceImpl::BuildPattern(
 
       auto* body_artifact = body->add_artifacts();
       body_artifact->CopyFrom(*top_artifact);
+    }
+
+    if (request->output().return_topology()) {
+      add_shape_topology(body->body_id(), shape, response->mutable_topology());
     }
 
     response->set_success(true);
@@ -710,6 +734,10 @@ grpc::Status GeometryKernelServiceImpl::RebuildPart(
 
         auto* body_artifact = body->add_artifacts();
         body_artifact->CopyFrom(*top_artifact);
+      }
+
+      if (request->output().return_topology()) {
+        add_shape_topology(body_id, body_state.shape, response->mutable_topology());
       }
     }
 
