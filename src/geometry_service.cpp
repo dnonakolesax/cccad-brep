@@ -8,6 +8,7 @@
 
 #include <exception>
 #include <algorithm>
+#include <iostream>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -16,6 +17,182 @@
 namespace cccad::geometry {
 
 namespace {
+
+
+const char* extrude_direction_name(cccad::geometry::v1::ExtrudeDirection direction) {
+  switch (direction) {
+    case cccad::geometry::v1::EXTRUDE_DIRECTION_UNSPECIFIED:
+      return "EXTRUDE_DIRECTION_UNSPECIFIED";
+    case cccad::geometry::v1::EXTRUDE_DIRECTION_FORWARD:
+      return "EXTRUDE_DIRECTION_FORWARD";
+    case cccad::geometry::v1::EXTRUDE_DIRECTION_BACKWARD:
+      return "EXTRUDE_DIRECTION_BACKWARD";
+    case cccad::geometry::v1::EXTRUDE_DIRECTION_SYMMETRIC:
+      return "EXTRUDE_DIRECTION_SYMMETRIC";
+    case cccad::geometry::v1::EXTRUDE_DIRECTION_THROUGH_ALL:
+      return "EXTRUDE_DIRECTION_THROUGH_ALL";
+    default:
+      return "EXTRUDE_DIRECTION_UNKNOWN";
+  }
+}
+
+const char* solid_operation_name(cccad::geometry::v1::SolidOperation operation) {
+  switch (operation) {
+    case cccad::geometry::v1::SOLID_OPERATION_UNSPECIFIED:
+      return "SOLID_OPERATION_UNSPECIFIED";
+    case cccad::geometry::v1::SOLID_OPERATION_NEW_BODY:
+      return "SOLID_OPERATION_NEW_BODY";
+    case cccad::geometry::v1::SOLID_OPERATION_JOIN:
+      return "SOLID_OPERATION_JOIN";
+    case cccad::geometry::v1::SOLID_OPERATION_CUT:
+      return "SOLID_OPERATION_CUT";
+    case cccad::geometry::v1::SOLID_OPERATION_INTERSECT:
+      return "SOLID_OPERATION_INTERSECT";
+    default:
+      return "SOLID_OPERATION_UNKNOWN";
+  }
+}
+
+void log_vec2(const char* name, const cccad::geometry::v1::Vec2& v) {
+  std::cerr << name << "=(" << v.x() << ", " << v.y() << ")";
+}
+
+void log_vec3(const char* name, const cccad::geometry::v1::Vec3& v) {
+  std::cerr << name << "=(" << v.x() << ", " << v.y() << ", " << v.z() << ")";
+}
+
+void log_artifact_ref(const char* prefix, const cccad::geometry::v1::ArtifactRef& artifact) {
+  std::cerr
+      << prefix
+      << "kind=" << artifact.kind()
+      << ", storage_key=" << artifact.storage_key()
+      << ", content_type=" << artifact.content_type()
+      << ", size_bytes=" << artifact.size_bytes()
+      << ", sha256=" << artifact.sha256()
+      << '\n';
+}
+
+void log_profile_curve(const cccad::geometry::v1::ProfileCurve& curve,
+                       const std::string& indent,
+                       int index) {
+  std::cerr << indent << "curve[" << index << "]: curve_id=" << curve.curve_id();
+
+  if (curve.has_line()) {
+    const auto& line = curve.line();
+    std::cerr << ", type=line, ";
+    log_vec2("start", line.start());
+    std::cerr << ", ";
+    log_vec2("end", line.end());
+    std::cerr << '\n';
+    return;
+  }
+
+  if (curve.has_arc()) {
+    const auto& arc = curve.arc();
+    std::cerr << ", type=arc, ";
+    log_vec2("center", arc.center());
+    std::cerr
+        << ", radius=" << arc.radius()
+        << ", start_angle_rad=" << arc.start_angle_rad()
+        << ", end_angle_rad=" << arc.end_angle_rad()
+        << ", clockwise=" << std::boolalpha << arc.clockwise() << std::noboolalpha
+        << '\n';
+    return;
+  }
+
+  if (curve.has_circle()) {
+    const auto& circle = curve.circle();
+    std::cerr << ", type=circle, ";
+    log_vec2("center", circle.center());
+    std::cerr << ", radius=" << circle.radius() << '\n';
+    return;
+  }
+
+  std::cerr << ", type=<not set>\n";
+}
+
+void log_profile_loop(const google::protobuf::RepeatedPtrField<cccad::geometry::v1::ProfileCurve>& curves,
+                      const std::string& name) {
+  std::cerr << "  " << name << ": curve_count=" << curves.size() << '\n';
+  for (int i = 0; i < curves.size(); ++i) {
+    log_profile_curve(curves.Get(i), "    ", i);
+  }
+}
+
+void log_build_extrude_request(const cccad::geometry::v1::BuildExtrudeRequest& request,
+                               const char* source) {
+  const auto& context = request.context();
+  const auto& plane = request.sketch_plane();
+  const auto& profile = request.profile();
+  const auto& params = request.parameters();
+  const auto& output = request.output();
+  const auto& mesh = output.mesh();
+
+  std::cerr
+      << "\n[extrude] input request"
+      << " source=" << source
+      << " request_id=" << context.request_id()
+      << " tenant_id=" << context.tenant_id()
+      << " workspace_id=" << context.workspace_id()
+      << " document_id=" << context.document_id()
+      << " part_id=" << context.part_id()
+      << " document_version=" << context.document_version()
+      << " storage_prefix=" << context.storage_prefix()
+      << '\n';
+
+  std::cerr
+      << "[extrude] ids:"
+      << " feature_id=" << request.feature_id()
+      << " sketch_id=" << request.sketch_id()
+      << " profile_id=" << profile.profile_id()
+      << '\n';
+
+  std::cerr << "[extrude] sketch_plane: kind=" << plane.kind() << ", ";
+  log_vec3("origin", plane.origin());
+  std::cerr << ", ";
+  log_vec3("x_axis", plane.x_axis());
+  std::cerr << ", ";
+  log_vec3("y_axis", plane.y_axis());
+  std::cerr << ", ";
+  log_vec3("normal", plane.normal());
+  std::cerr << '\n';
+
+  std::cerr
+      << "[extrude] parameters:"
+      << " depth=" << params.depth()
+      << " direction=" << extrude_direction_name(params.direction()) << "(" << params.direction() << ")"
+      << " operation=" << solid_operation_name(params.operation()) << "(" << params.operation() << ")"
+      << " target_body_id=" << params.target_body_id()
+      << " draft_angle_rad=" << params.draft_angle_rad()
+      << '\n';
+
+  log_profile_loop(profile.outer_loop(), "outer_loop");
+  std::cerr << "  inner_loop_count=" << profile.inner_loops_size() << '\n';
+  for (int i = 0; i < profile.inner_loops_size(); ++i) {
+    log_profile_loop(profile.inner_loops(i).curves(), "inner_loops[" + std::to_string(i) + "].curves");
+  }
+
+  std::cerr
+      << "[extrude] existing_bodies_count=" << request.existing_bodies_size() << '\n';
+  for (int i = 0; i < request.existing_bodies_size(); ++i) {
+    const auto& body = request.existing_bodies(i);
+    std::cerr << "  existing_bodies[" << i << "]: body_id=" << body.body_id() << '\n';
+    log_artifact_ref("    brep: ", body.brep());
+  }
+
+  std::cerr
+      << "[extrude] output:"
+      << " return_topology=" << std::boolalpha << output.return_topology()
+      << " write_brep=" << output.write_brep()
+      << " write_glb=" << output.write_glb()
+      << " write_mesh_json=" << output.write_mesh_json()
+      << " write_step=" << output.write_step()
+      << " write_stl=" << output.write_stl()
+      << std::noboolalpha
+      << " mesh.linear_deflection=" << mesh.linear_deflection()
+      << " mesh.angular_deflection_rad=" << mesh.angular_deflection_rad()
+      << '\n';
+}
 
 void add_diagnostic(cccad::geometry::v1::BuildFeatureResponse* response,
                     const cccad::geometry::v1::BuildExtrudeRequest& request,
@@ -274,6 +451,7 @@ grpc::Status GeometryKernelServiceImpl::BuildExtrude(
     const cccad::geometry::v1::BuildExtrudeRequest* request,
     cccad::geometry::v1::BuildFeatureResponse* response) {
   response->set_request_id(request->context().request_id());
+  log_build_extrude_request(*request, "BuildExtrude");
 
   try {
     TopoDS_Shape shape = build_extrude_shape(*request);
@@ -575,6 +753,8 @@ grpc::Status GeometryKernelServiceImpl::RebuildPart(
             build_request.mutable_output()->CopyFrom(request->output());
 
             const std::string body_id = feature->feature_id().empty() ? "body" : ("body-" + feature->feature_id());
+            log_build_extrude_request(build_request, "RebuildPart");
+
             bodies[body_id] = BodyState{
                 .shape = build_extrude_shape(build_request),
                 .created_by_feature_id = feature->feature_id(),

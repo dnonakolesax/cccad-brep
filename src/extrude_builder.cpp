@@ -2,6 +2,7 @@
 #include "cccad/geometry/types.hpp"
 
 #include <cmath>
+#include <iostream>
 #include <stdexcept>
 #include <string>
 
@@ -24,6 +25,27 @@
 namespace cccad::geometry {
 
 namespace {
+
+const char* extrude_direction_name(cccad::geometry::v1::ExtrudeDirection direction) {
+  switch (direction) {
+    case cccad::geometry::v1::EXTRUDE_DIRECTION_UNSPECIFIED:
+      return "EXTRUDE_DIRECTION_UNSPECIFIED";
+    case cccad::geometry::v1::EXTRUDE_DIRECTION_FORWARD:
+      return "EXTRUDE_DIRECTION_FORWARD";
+    case cccad::geometry::v1::EXTRUDE_DIRECTION_BACKWARD:
+      return "EXTRUDE_DIRECTION_BACKWARD";
+    case cccad::geometry::v1::EXTRUDE_DIRECTION_SYMMETRIC:
+      return "EXTRUDE_DIRECTION_SYMMETRIC";
+    case cccad::geometry::v1::EXTRUDE_DIRECTION_THROUGH_ALL:
+      return "EXTRUDE_DIRECTION_THROUGH_ALL";
+    default:
+      return "EXTRUDE_DIRECTION_UNKNOWN";
+  }
+}
+
+void log_vec3d(const char* name, const Vec3d& v) {
+  std::cerr << name << "=(" << v.x << ", " << v.y << ", " << v.z << ")";
+}
 
 TopoDS_Wire make_wire_from_curves(
     const cccad::geometry::v1::SketchPlane& plane,
@@ -181,6 +203,18 @@ TopoDS_Shape build_extrude_shape(const cccad::geometry::v1::BuildExtrudeRequest&
   const Vec3d n = normalize(from_proto(request.sketch_plane().normal()), "normal");
   const double depth = params.depth();
 
+  std::cerr
+      << "[extrude_builder] validated parameters:"
+      << " feature_id=" << request.feature_id()
+      << " depth=" << depth
+      << " direction=" << extrude_direction_name(params.direction()) << "(" << params.direction() << ")"
+      << " outer_curve_count=" << request.profile().outer_loop_size()
+      << " inner_loop_count=" << request.profile().inner_loops_size()
+      << '\n';
+  std::cerr << "[extrude_builder] normalized sketch normal: ";
+  log_vec3d("n", n);
+  std::cerr << '\n';
+
   TopoDS_Shape base_face = make_face_from_profile(request.sketch_plane(), request.profile());
 
   gp_Vec prism_vec;
@@ -205,6 +239,11 @@ TopoDS_Shape build_extrude_shape(const cccad::geometry::v1::BuildExtrudeRequest&
       throw std::runtime_error("unsupported extrude direction enum value");
   }
 
+  std::cerr
+      << "[extrude_builder] prism_vec=("
+      << prism_vec.X() << ", " << prism_vec.Y() << ", " << prism_vec.Z() << ")"
+      << '\n';
+
   BRepPrimAPI_MakePrism prism_maker(base_face, prism_vec, false, true);
   prism_maker.Build();
   if (!prism_maker.IsDone()) {
@@ -213,6 +252,7 @@ TopoDS_Shape build_extrude_shape(const cccad::geometry::v1::BuildExtrudeRequest&
 
   TopoDS_Shape result = prism_maker.Shape();
   BRepLib::BuildCurves3d(result);
+  std::cerr << "[extrude_builder] prism build finished: feature_id=" << request.feature_id() << '\n';
   return result;
 }
 
