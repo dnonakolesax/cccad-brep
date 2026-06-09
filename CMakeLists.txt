@@ -24,7 +24,6 @@ set(CCCAD_OCCT_COMPONENTS
   TKBool
   TKFillet
   TKMesh
-  TKShHealing
 )
 
 set(CCCAD_OCCT_LIBRARIES)

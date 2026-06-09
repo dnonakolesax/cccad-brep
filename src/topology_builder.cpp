@@ -17,7 +17,6 @@
 #include <BRepTools_WireExplorer.hxx>
 #include <GeomAbs_CurveType.hxx>
 #include <GeomAbs_SurfaceType.hxx>
-#include <ShapeFix_Shape.hxx>
 #include <TopAbs_Orientation.hxx>
 #include <TopAbs_ShapeEnum.hxx>
 #include <TopExp.hxx>
@@ -583,16 +582,10 @@ TopoDS_Shape normalize_shape_for_topology(const TopoDS_Shape& shape) {
     return shape;
   }
 
-  TopoDS_Shape fixed = shape;
-  BRepLib::BuildCurves3d(fixed);
-
-  ShapeFix_Shape fixer(fixed);
-  fixer.Perform();
-  TopoDS_Shape result = fixer.Shape();
-  if (result.IsNull()) {
-    return fixed;
-  }
-
+  // Rebuild missing 3D curves before exporting B-Rep topology. This is enough for
+  // the topology DTO fallback below and avoids pulling TKShHealing into the MVP
+  // container link stage.
+  TopoDS_Shape result = shape;
   BRepLib::BuildCurves3d(result);
   return result;
 }
@@ -643,14 +636,22 @@ void add_shape_topology(const std::string& body_id,
   }
 }
 
-cccad::geometry::v1::SketchPlane plane_for_face(const TopoDS_Shape& shape, const std::string& face_id) {
+std::string get_face_plane(const TopoDS_Shape& shape,
+                           const std::string& face_id,
+                           cccad::geometry::v1::SketchPlane* plane) {
   if (shape.IsNull()) {
     throw std::runtime_error("cannot extract face plane from a null shape");
   }
 
+  if (plane == nullptr) {
+    throw std::runtime_error("output plane pointer is null");
+  }
+
+  const TopoDS_Shape topology_shape = normalize_shape_for_topology(shape);
   const int target_index = parse_face_id(face_id);
+
   TopTools_IndexedMapOfShape face_map;
-  TopExp::MapShapes(shape, TopAbs_FACE, face_map);
+  TopExp::MapShapes(topology_shape, TopAbs_FACE, face_map);
   if (target_index > face_map.Extent()) {
     throw std::runtime_error("face_id is outside topology face range: " + face_id);
   }
@@ -661,9 +662,8 @@ cccad::geometry::v1::SketchPlane plane_for_face(const TopoDS_Shape& shape, const
     throw std::runtime_error("selected face is not planar");
   }
 
-  cccad::geometry::v1::SketchPlane plane;
-  set_plane_from_occt(surface.Plane(), &plane);
-  return plane;
+  set_plane_from_occt(surface.Plane(), plane);
+  return "plane";
 }
 
 } // namespace cccad::geometry
