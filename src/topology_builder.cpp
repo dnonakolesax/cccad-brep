@@ -173,8 +173,16 @@ void add_face(const std::string& body_ref,
     loop->set_loop_id(indexed_id("loop", loop_index));
     loop->set_stable_ref(out_face->stable_ref() + "/loop-" + std::to_string(loop_index));
 
+    bool added_edge = false;
     for (BRepTools_WireExplorer edge_exp(wire, face); edge_exp.More(); edge_exp.Next()) {
       add_edge(body_ref, edge_map, vertex_map, edge_exp.Current(), loop);
+      added_edge = true;
+    }
+
+    if (!added_edge) {
+      for (TopExp_Explorer edge_exp(wire, TopAbs_EDGE); edge_exp.More(); edge_exp.Next()) {
+        add_edge(body_ref, edge_map, vertex_map, TopoDS::Edge(edge_exp.Current()), loop);
+      }
     }
   }
 }
