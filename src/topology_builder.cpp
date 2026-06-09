@@ -1,16 +1,23 @@
 #include "cccad/geometry/topology_builder.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <map>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
+#include <BRepLib.hxx>
 #include <BRep_Tool.hxx>
 #include <BRepTools.hxx>
 #include <BRepTools_WireExplorer.hxx>
 #include <GeomAbs_CurveType.hxx>
 #include <GeomAbs_SurfaceType.hxx>
+#include <ShapeFix_Shape.hxx>
 #include <TopAbs_Orientation.hxx>
 #include <TopAbs_ShapeEnum.hxx>
 #include <TopExp.hxx>
@@ -19,6 +26,7 @@
 #include <TopoDS.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
+#include <TopoDS_Shape.hxx>
 #include <TopoDS_Shell.hxx>
 #include <TopoDS_Vertex.hxx>
 #include <TopoDS_Wire.hxx>
@@ -27,10 +35,14 @@
 #include <gp_Dir.hxx>
 #include <gp_Pln.hxx>
 #include <gp_Pnt.hxx>
+#include <gp_Vec.hxx>
+#include <gp_XYZ.hxx>
 
 namespace cccad::geometry {
 
 namespace {
+
+constexpr double kPi = 3.141592653589793238462643383279502884;
 
 std::string indexed_id(const std::string& prefix, int index) {
   return prefix + "-" + std::to_string(index);
@@ -159,12 +171,30 @@ std::string orientation_type(const TopoDS_Shape& shape) {
   }
 }
 
+int shape_index_ignore_orientation(const TopTools_IndexedMapOfShape& map, const TopoDS_Shape& shape) {
+  int index = map.FindIndex(shape);
+  if (index > 0) {
+    return index;
+  }
+
+  TopoDS_Shape forward = shape;
+  forward.Orientation(TopAbs_FORWARD);
+  index = map.FindIndex(forward);
+  if (index > 0) {
+    return index;
+  }
+
+  TopoDS_Shape reversed = shape;
+  reversed.Orientation(TopAbs_REVERSED);
+  return map.FindIndex(reversed);
+}
+
 std::string vertex_id_for(const TopTools_IndexedMapOfShape& vertex_map, const TopoDS_Vertex& vertex) {
   if (vertex.IsNull()) {
     return "";
   }
 
-  const int index = vertex_map.FindIndex(vertex);
+  const int index = shape_index_ignore_orientation(vertex_map, vertex);
   if (index <= 0) {
     return "";
   }
@@ -190,9 +220,16 @@ bool loop_edges_closed(const cccad::geometry::v1::Loop& loop) {
     return false;
   }
 
+  if (loop.edges_size() == 1 && loop.edges(0).start_vertex_id() == loop.edges(0).end_vertex_id()) {
+    return true;
+  }
+
   for (int i = 0; i < loop.edges_size(); ++i) {
     const auto& current = loop.edges(i);
     const auto& next = loop.edges((i + 1) % loop.edges_size());
+    if (current.end_vertex_id().empty() || next.start_vertex_id().empty()) {
+      return false;
+    }
     if (current.end_vertex_id() != next.start_vertex_id()) {
       return false;
     }
@@ -201,24 +238,291 @@ bool loop_edges_closed(const cccad::geometry::v1::Loop& loop) {
   return true;
 }
 
-void add_edge(const std::string& body_ref,
-              const TopTools_IndexedMapOfShape& edge_map,
-              const TopTools_IndexedMapOfShape& vertex_map,
-              const TopoDS_Edge& edge,
-              cccad::geometry::v1::Loop* loop) {
-  const int edge_index = edge_map.FindIndex(edge);
-  auto* out_edge = loop->add_edges();
-  out_edge->set_edge_id(indexed_id("edge", edge_index));
-  out_edge->set_stable_ref(body_ref + "/edge-" + std::to_string(edge_index));
-  out_edge->set_curve_type(curve_type(edge));
-  out_edge->set_orientation(orientation_type(edge));
-
+std::pair<std::string, std::string> edge_vertex_ids(const TopTools_IndexedMapOfShape& vertex_map,
+                                                    const TopoDS_Edge& edge) {
   TopoDS_Vertex start;
   TopoDS_Vertex end;
   TopExp::Vertices(edge, start, end, true);
-  out_edge->set_start_vertex_id(vertex_id_for(vertex_map, start));
-  out_edge->set_end_vertex_id(vertex_id_for(vertex_map, end));
+  return {vertex_id_for(vertex_map, start), vertex_id_for(vertex_map, end)};
+}
+
+TopoDS_Edge reversed_edge(TopoDS_Edge edge) {
+  edge.Reverse();
+  return edge;
+}
+
+int add_edge(const std::string& body_ref,
+             const TopTools_IndexedMapOfShape& edge_map,
+             const TopTools_IndexedMapOfShape& vertex_map,
+             const TopoDS_Edge& edge,
+             std::map<std::string, int>& loop_edge_id_counts,
+             cccad::geometry::v1::Loop* loop) {
+  const int edge_index = shape_index_ignore_orientation(edge_map, edge);
+  const std::string base_edge_id = edge_index > 0 ? indexed_id("edge", edge_index) : "edge-unmapped";
+
+  int occurrence = ++loop_edge_id_counts[base_edge_id];
+  std::string local_edge_id = base_edge_id;
+  if (occurrence > 1) {
+    local_edge_id += "#" + std::to_string(occurrence);
+  }
+
+  auto* out_edge = loop->add_edges();
+  out_edge->set_edge_id(local_edge_id);
+  out_edge->set_stable_ref(edge_index > 0 ? body_ref + "/edge-" + std::to_string(edge_index) : body_ref + "/edge-unmapped");
+  out_edge->set_curve_type(curve_type(edge));
+  out_edge->set_orientation(orientation_type(edge));
+
+  const auto [start_vertex_id, end_vertex_id] = edge_vertex_ids(vertex_map, edge);
+  out_edge->set_start_vertex_id(start_vertex_id);
+  out_edge->set_end_vertex_id(end_vertex_id);
   set_circle_if_circular(edge, out_edge);
+
+  return edge_index;
+}
+
+std::optional<gp_Pln> planar_surface(const TopoDS_Face& face) {
+  BRepAdaptor_Surface surface(face, true);
+  if (surface.GetType() != GeomAbs_Plane) {
+    return std::nullopt;
+  }
+  return surface.Plane();
+}
+
+gp_Pnt vertex_point_by_id(const TopTools_IndexedMapOfShape& vertex_map, const std::string& vertex_id) {
+  constexpr const char* prefix = "vertex-";
+  if (vertex_id.rfind(prefix, 0) != 0) {
+    return gp_Pnt(0.0, 0.0, 0.0);
+  }
+
+  const int index = std::stoi(vertex_id.substr(7));
+  if (index <= 0 || index > vertex_map.Extent()) {
+    return gp_Pnt(0.0, 0.0, 0.0);
+  }
+
+  return BRep_Tool::Pnt(TopoDS::Vertex(vertex_map(index)));
+}
+
+std::pair<double, double> project_to_plane_uv(const gp_Pln& plane, const gp_Pnt& point) {
+  const gp_Vec delta(plane.Location(), point);
+  const gp_Dir x_axis = plane.XAxis().Direction();
+  const gp_Dir y_axis = plane.YAxis().Direction();
+  return {delta.Dot(gp_Vec(x_axis)), delta.Dot(gp_Vec(y_axis))};
+}
+
+double loop_area_abs_on_plane(const cccad::geometry::v1::Loop& loop,
+                              const TopTools_IndexedMapOfShape& vertex_map,
+                              const gp_Pln& plane) {
+  if (loop.edges_size() == 0) {
+    return 0.0;
+  }
+
+  if (loop.edges_size() == 1 && loop.edges(0).has_circle()) {
+    const double r = loop.edges(0).circle().radius();
+    return kPi * r * r;
+  }
+
+  std::vector<std::pair<double, double>> points;
+  points.reserve(static_cast<std::size_t>(loop.edges_size()));
+  for (const auto& edge : loop.edges()) {
+    if (edge.start_vertex_id().empty()) {
+      continue;
+    }
+    points.push_back(project_to_plane_uv(plane, vertex_point_by_id(vertex_map, edge.start_vertex_id())));
+  }
+
+  if (points.size() < 3) {
+    return 0.0;
+  }
+
+  double area = 0.0;
+  for (std::size_t i = 0; i < points.size(); ++i) {
+    const auto& a = points[i];
+    const auto& b = points[(i + 1) % points.size()];
+    area += a.first * b.second - b.first * a.second;
+  }
+
+  return std::abs(area * 0.5);
+}
+
+void classify_loop_roles(cccad::geometry::v1::Face* out_face,
+                         const TopTools_IndexedMapOfShape& vertex_map,
+                         const TopoDS_Face& face) {
+  if (out_face->loops_size() == 0) {
+    return;
+  }
+
+  int existing_outer = -1;
+  for (int i = 0; i < out_face->loops_size(); ++i) {
+    const auto& loop = out_face->loops(i);
+    if (loop.role() == "outer" && loop.edges_size() > 0) {
+      existing_outer = i;
+      break;
+    }
+  }
+
+  if (existing_outer < 0) {
+    existing_outer = 0;
+    if (const auto plane = planar_surface(face); plane.has_value()) {
+      double best_area = -1.0;
+      for (int i = 0; i < out_face->loops_size(); ++i) {
+        const double area = loop_area_abs_on_plane(out_face->loops(i), vertex_map, *plane);
+        if (area > best_area) {
+          best_area = area;
+          existing_outer = i;
+        }
+      }
+    }
+  }
+
+  for (int i = 0; i < out_face->loops_size(); ++i) {
+    auto* loop = out_face->mutable_loops(i);
+    loop->set_role(i == existing_outer ? "outer" : "inner");
+    loop->set_closed(loop_edges_closed(*loop));
+  }
+}
+
+bool add_loop_from_wire(const std::string& body_ref,
+                        const TopTools_IndexedMapOfShape& edge_map,
+                        const TopTools_IndexedMapOfShape& vertex_map,
+                        const TopoDS_Face& face,
+                        const TopoDS_Wire& wire,
+                        const std::string& role,
+                        int loop_index,
+                        cccad::geometry::v1::Face* out_face) {
+  auto* loop = out_face->add_loops();
+  loop->set_loop_id(indexed_id("loop", loop_index));
+  loop->set_stable_ref(out_face->stable_ref() + "/loop-" + std::to_string(loop_index));
+  loop->set_role(role);
+
+  std::map<std::string, int> loop_edge_id_counts;
+  for (BRepTools_WireExplorer edge_exp(wire, face); edge_exp.More(); edge_exp.Next()) {
+    add_edge(body_ref, edge_map, vertex_map, edge_exp.Current(), loop_edge_id_counts, loop);
+  }
+
+  if (loop->edges_size() == 0) {
+    for (TopExp_Explorer edge_exp(wire, TopAbs_EDGE); edge_exp.More(); edge_exp.Next()) {
+      add_edge(body_ref, edge_map, vertex_map, TopoDS::Edge(edge_exp.Current()), loop_edge_id_counts, loop);
+    }
+  }
+
+  if (loop->edges_size() == 0) {
+    out_face->mutable_loops()->RemoveLast();
+    return false;
+  }
+
+  loop->set_closed(loop_edges_closed(*loop));
+  return true;
+}
+
+std::vector<TopoDS_Edge> collect_face_edges(const TopoDS_Face& face) {
+  TopTools_IndexedMapOfShape unique_edges;
+  TopExp::MapShapes(face, TopAbs_EDGE, unique_edges);
+
+  std::vector<TopoDS_Edge> result;
+  result.reserve(static_cast<std::size_t>(unique_edges.Extent()));
+  for (int i = 1; i <= unique_edges.Extent(); ++i) {
+    result.push_back(TopoDS::Edge(unique_edges(i)));
+  }
+  return result;
+}
+
+std::vector<std::vector<TopoDS_Edge>> build_edge_loops_by_connectivity(
+    const std::vector<TopoDS_Edge>& input_edges,
+    const TopTools_IndexedMapOfShape& vertex_map) {
+  std::vector<TopoDS_Edge> unused = input_edges;
+  std::vector<std::vector<TopoDS_Edge>> loops;
+
+  while (!unused.empty()) {
+    std::vector<TopoDS_Edge> loop;
+    loop.push_back(unused.front());
+    unused.erase(unused.begin());
+
+    auto [start_id, current_end_id] = edge_vertex_ids(vertex_map, loop.front());
+
+    // A full circle edge is a valid one-edge closed loop.
+    if (!start_id.empty() && start_id == current_end_id) {
+      loops.push_back(std::move(loop));
+      continue;
+    }
+
+    while (!unused.empty() && !start_id.empty() && !current_end_id.empty() && current_end_id != start_id) {
+      auto next_it = unused.end();
+      bool reverse_next = false;
+
+      for (auto it = unused.begin(); it != unused.end(); ++it) {
+        const auto [candidate_start, candidate_end] = edge_vertex_ids(vertex_map, *it);
+        if (candidate_start == current_end_id) {
+          next_it = it;
+          reverse_next = false;
+          break;
+        }
+        if (candidate_end == current_end_id) {
+          next_it = it;
+          reverse_next = true;
+          break;
+        }
+      }
+
+      if (next_it == unused.end()) {
+        break;
+      }
+
+      TopoDS_Edge next_edge = *next_it;
+      unused.erase(next_it);
+      if (reverse_next) {
+        next_edge = reversed_edge(next_edge);
+      }
+      current_end_id = edge_vertex_ids(vertex_map, next_edge).second;
+      loop.push_back(next_edge);
+    }
+
+    loops.push_back(std::move(loop));
+  }
+
+  return loops;
+}
+
+void add_loops_from_face_edges_fallback(const std::string& body_ref,
+                                        const TopTools_IndexedMapOfShape& edge_map,
+                                        const TopTools_IndexedMapOfShape& vertex_map,
+                                        const TopoDS_Face& face,
+                                        cccad::geometry::v1::Face* out_face) {
+  const auto edge_loops = build_edge_loops_by_connectivity(collect_face_edges(face), vertex_map);
+
+  int loop_index = out_face->loops_size();
+  for (const auto& edge_loop : edge_loops) {
+    if (edge_loop.empty()) {
+      continue;
+    }
+
+    ++loop_index;
+    auto* loop = out_face->add_loops();
+    loop->set_loop_id(indexed_id("loop", loop_index));
+    loop->set_stable_ref(out_face->stable_ref() + "/loop-" + std::to_string(loop_index));
+    loop->set_role("unknown");
+
+    std::map<std::string, int> loop_edge_id_counts;
+    for (const auto& edge : edge_loop) {
+      add_edge(body_ref, edge_map, vertex_map, edge, loop_edge_id_counts, loop);
+    }
+
+    if (loop->edges_size() == 0) {
+      out_face->mutable_loops()->RemoveLast();
+      --loop_index;
+      continue;
+    }
+
+    loop->set_closed(loop_edges_closed(*loop));
+  }
+}
+
+bool has_non_empty_outer_loop(const cccad::geometry::v1::Face& face) {
+  for (const auto& loop : face.loops()) {
+    if (loop.role() == "outer" && loop.edges_size() > 0) {
+      return true;
+    }
+  }
+  return false;
 }
 
 void add_face(const std::string& body_ref,
@@ -227,7 +531,7 @@ void add_face(const std::string& body_ref,
               const TopTools_IndexedMapOfShape& vertex_map,
               const TopoDS_Face& face,
               cccad::geometry::v1::Shell* shell) {
-  const int face_index = face_map.FindIndex(face);
+  const int face_index = shape_index_ignore_orientation(face_map, face);
   auto* out_face = shell->add_faces();
   out_face->set_face_id(indexed_id("face", face_index));
   out_face->set_stable_ref(body_ref + "/face-" + std::to_string(face_index));
@@ -238,38 +542,28 @@ void add_face(const std::string& body_ref,
   int loop_index = 0;
   const TopoDS_Wire outer_wire = BRepTools::OuterWire(face);
   for (TopExp_Explorer wire_exp(face, TopAbs_WIRE); wire_exp.More(); wire_exp.Next()) {
-    ++loop_index;
     const TopoDS_Wire wire = TopoDS::Wire(wire_exp.Current());
-    auto* loop = out_face->add_loops();
-    loop->set_loop_id(indexed_id("loop", loop_index));
-    loop->set_stable_ref(out_face->stable_ref() + "/loop-" + std::to_string(loop_index));
-    loop->set_role(!outer_wire.IsNull() && wire.IsSame(outer_wire) ? "outer" : "inner");
-
-    bool added_edge = false;
-    for (BRepTools_WireExplorer edge_exp(wire, face); edge_exp.More(); edge_exp.Next()) {
-      add_edge(body_ref, edge_map, vertex_map, edge_exp.Current(), loop);
-      added_edge = true;
-    }
-
-    if (!added_edge) {
-      for (TopExp_Explorer edge_exp(wire, TopAbs_EDGE); edge_exp.More(); edge_exp.Next()) {
-        add_edge(body_ref, edge_map, vertex_map, TopoDS::Edge(edge_exp.Current()), loop);
-      }
-    }
-
-    loop->set_closed(loop_edges_closed(*loop));
+    const bool is_outer = !outer_wire.IsNull() && wire.IsSame(outer_wire);
+    ++loop_index;
+    add_loop_from_wire(
+        body_ref,
+        edge_map,
+        vertex_map,
+        face,
+        wire,
+        is_outer ? "outer" : "inner",
+        loop_index,
+        out_face);
   }
 
-  if (loop_index == 0) {
-    auto* loop = out_face->add_loops();
-    loop->set_loop_id("loop-1");
-    loop->set_stable_ref(out_face->stable_ref() + "/loop-1");
-    loop->set_role("outer");
-    for (TopExp_Explorer edge_exp(face, TopAbs_EDGE); edge_exp.More(); edge_exp.Next()) {
-      add_edge(body_ref, edge_map, vertex_map, TopoDS::Edge(edge_exp.Current()), loop);
-    }
-    loop->set_closed(loop_edges_closed(*loop));
+  // Some OCCT boolean/prism results can expose an empty wire placeholder when
+  // 3D curves or p-curves are not yet rebuilt. Do not return that placeholder
+  // to the frontend. Reconstruct loops from the face edges instead.
+  if (out_face->loops_size() == 0 || !has_non_empty_outer_loop(*out_face)) {
+    add_loops_from_face_edges_fallback(body_ref, edge_map, vertex_map, face, out_face);
   }
+
+  classify_loop_roles(out_face, vertex_map, face);
 }
 
 void add_vertices(const std::string& body_ref,
@@ -284,6 +578,25 @@ void add_vertices(const std::string& body_ref,
   }
 }
 
+TopoDS_Shape normalize_shape_for_topology(const TopoDS_Shape& shape) {
+  if (shape.IsNull()) {
+    return shape;
+  }
+
+  TopoDS_Shape fixed = shape;
+  BRepLib::BuildCurves3d(fixed);
+
+  ShapeFix_Shape fixer(fixed);
+  fixer.Perform();
+  TopoDS_Shape result = fixer.Shape();
+  if (result.IsNull()) {
+    return fixed;
+  }
+
+  BRepLib::BuildCurves3d(result);
+  return result;
+}
+
 } // namespace
 
 void add_shape_topology(const std::string& body_id,
@@ -293,12 +606,14 @@ void add_shape_topology(const std::string& body_id,
     throw std::runtime_error("cannot extract topology from a null shape");
   }
 
+  const TopoDS_Shape topology_shape = normalize_shape_for_topology(shape);
+
   TopTools_IndexedMapOfShape face_map;
   TopTools_IndexedMapOfShape edge_map;
   TopTools_IndexedMapOfShape vertex_map;
-  TopExp::MapShapes(shape, TopAbs_FACE, face_map);
-  TopExp::MapShapes(shape, TopAbs_EDGE, edge_map);
-  TopExp::MapShapes(shape, TopAbs_VERTEX, vertex_map);
+  TopExp::MapShapes(topology_shape, TopAbs_FACE, face_map);
+  TopExp::MapShapes(topology_shape, TopAbs_EDGE, edge_map);
+  TopExp::MapShapes(topology_shape, TopAbs_VERTEX, vertex_map);
 
   auto* body = topology->add_bodies();
   body->set_body_id(body_id);
@@ -306,7 +621,7 @@ void add_shape_topology(const std::string& body_id,
   add_vertices(body_id, vertex_map, body);
 
   int shell_index = 0;
-  for (TopExp_Explorer shell_exp(shape, TopAbs_SHELL); shell_exp.More(); shell_exp.Next()) {
+  for (TopExp_Explorer shell_exp(topology_shape, TopAbs_SHELL); shell_exp.More(); shell_exp.Next()) {
     ++shell_index;
     const TopoDS_Shell shell = TopoDS::Shell(shell_exp.Current());
     auto* out_shell = body->add_shells();
@@ -318,40 +633,37 @@ void add_shape_topology(const std::string& body_id,
     }
   }
 
-  if (shell_index == 0 && face_map.Extent() > 0) {
+  if (shell_index == 0) {
     auto* out_shell = body->add_shells();
     out_shell->set_shell_id("shell-1");
     out_shell->set_stable_ref(body_id + "/shell-1");
-
-    for (TopExp_Explorer face_exp(shape, TopAbs_FACE); face_exp.More(); face_exp.Next()) {
+    for (TopExp_Explorer face_exp(topology_shape, TopAbs_FACE); face_exp.More(); face_exp.Next()) {
       add_face(body_id, face_map, edge_map, vertex_map, TopoDS::Face(face_exp.Current()), out_shell);
     }
   }
 }
 
-std::string get_face_plane(const TopoDS_Shape& shape,
-                           const std::string& face_id,
-                           cccad::geometry::v1::SketchPlane* plane) {
+cccad::geometry::v1::SketchPlane plane_for_face(const TopoDS_Shape& shape, const std::string& face_id) {
   if (shape.IsNull()) {
     throw std::runtime_error("cannot extract face plane from a null shape");
   }
 
+  const int target_index = parse_face_id(face_id);
   TopTools_IndexedMapOfShape face_map;
   TopExp::MapShapes(shape, TopAbs_FACE, face_map);
-
-  const int face_index = parse_face_id(face_id);
-  if (face_index > face_map.Extent()) {
-    throw std::runtime_error("face_id is out of range: " + face_id);
+  if (target_index > face_map.Extent()) {
+    throw std::runtime_error("face_id is outside topology face range: " + face_id);
   }
 
-  const TopoDS_Face face = TopoDS::Face(face_map(face_index));
-  const std::string type = surface_type(face);
+  const TopoDS_Face face = TopoDS::Face(face_map(target_index));
   BRepAdaptor_Surface surface(face, true);
-  if (surface.GetType() == GeomAbs_Plane) {
-    set_plane_from_occt(surface.Plane(), plane);
+  if (surface.GetType() != GeomAbs_Plane) {
+    throw std::runtime_error("selected face is not planar");
   }
 
-  return type;
+  cccad::geometry::v1::SketchPlane plane;
+  set_plane_from_occt(surface.Plane(), &plane);
+  return plane;
 }
 
 } // namespace cccad::geometry

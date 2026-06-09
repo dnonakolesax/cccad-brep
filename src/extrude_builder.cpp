@@ -11,6 +11,7 @@
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
+#include <BRepLib.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Wire.hxx>
@@ -210,7 +211,9 @@ TopoDS_Shape build_extrude_shape(const cccad::geometry::v1::BuildExtrudeRequest&
     throw std::runtime_error("OpenCascade prism builder failed");
   }
 
-  return prism_maker.Shape();
+  TopoDS_Shape result = prism_maker.Shape();
+  BRepLib::BuildCurves3d(result);
+  return result;
 }
 
 } // namespace cccad::geometry

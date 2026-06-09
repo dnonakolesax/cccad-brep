@@ -9,7 +9,9 @@
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
+#include <BRepLib.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
+#include <Precision.hxx>
 #include <TopoDS_Face.hxx>
 #include <gp_Ax2.hxx>
 #include <gp_Circ.hxx>
@@ -119,7 +121,10 @@ TopoDS_Shape build_hole_shape(const cccad::geometry::v1::BuildHoleRequest& reque
     throw std::runtime_error("OpenCascade hole cut failed");
   }
 
-  return cut_maker.Shape();
+  cut_maker.SimplifyResult(true, true, Precision::Angular());
+  TopoDS_Shape result = cut_maker.Shape();
+  BRepLib::BuildCurves3d(result);
+  return result;
 }
 
 } // namespace cccad::geometry
