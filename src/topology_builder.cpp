@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iostream>
 #include <map>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -524,6 +526,154 @@ bool has_non_empty_outer_loop(const cccad::geometry::v1::Face& face) {
   return false;
 }
 
+
+void remove_empty_loops(cccad::geometry::v1::Face* face) {
+  for (int i = face->loops_size() - 1; i >= 0; --i) {
+    if (face->loops(i).edges_size() == 0) {
+      face->mutable_loops()->DeleteSubrange(i, 1);
+    }
+  }
+}
+
+struct PlanarVertexCandidate {
+  std::string vertex_id;
+  double u = 0.0;
+  double v = 0.0;
+};
+
+double cross_2d(const PlanarVertexCandidate& o,
+                const PlanarVertexCandidate& a,
+                const PlanarVertexCandidate& b) {
+  return (a.u - o.u) * (b.v - o.v) - (a.v - o.v) * (b.u - o.u);
+}
+
+std::vector<PlanarVertexCandidate> convex_hull(std::vector<PlanarVertexCandidate> points) {
+  constexpr double eps = 1.0e-9;
+  if (points.size() < 3) {
+    return {};
+  }
+
+  std::sort(points.begin(), points.end(), [](const auto& a, const auto& b) {
+    if (a.u == b.u) {
+      return a.v < b.v;
+    }
+    return a.u < b.u;
+  });
+
+  std::vector<PlanarVertexCandidate> unique;
+  unique.reserve(points.size());
+  for (const auto& point : points) {
+    if (!unique.empty() && std::abs(unique.back().u - point.u) < eps && std::abs(unique.back().v - point.v) < eps) {
+      continue;
+    }
+    unique.push_back(point);
+  }
+
+  if (unique.size() < 3) {
+    return {};
+  }
+
+  std::vector<PlanarVertexCandidate> lower;
+  for (const auto& point : unique) {
+    while (lower.size() >= 2 && cross_2d(lower[lower.size() - 2], lower.back(), point) <= eps) {
+      lower.pop_back();
+    }
+    lower.push_back(point);
+  }
+
+  std::vector<PlanarVertexCandidate> upper;
+  for (auto it = unique.rbegin(); it != unique.rend(); ++it) {
+    while (upper.size() >= 2 && cross_2d(upper[upper.size() - 2], upper.back(), *it) <= eps) {
+      upper.pop_back();
+    }
+    upper.push_back(*it);
+  }
+
+  lower.pop_back();
+  upper.pop_back();
+  lower.insert(lower.end(), upper.begin(), upper.end());
+  return lower;
+}
+
+int next_loop_index(const cccad::geometry::v1::Face& face) {
+  int result = face.loops_size() + 1;
+  for (const auto& loop : face.loops()) {
+    const std::string& loop_id = loop.loop_id();
+    constexpr const char* prefix = "loop-";
+    if (loop_id.rfind(prefix, 0) != 0) {
+      continue;
+    }
+    try {
+      result = std::max(result, std::stoi(loop_id.substr(5)) + 1);
+    } catch (...) {
+      // Keep generated fallback index.
+    }
+  }
+  return result;
+}
+
+void add_synthetic_outer_loop_from_planar_hull(const std::string& body_ref,
+                                               const TopTools_IndexedMapOfShape& vertex_map,
+                                               const TopoDS_Face& face,
+                                               cccad::geometry::v1::Face* out_face) {
+  const auto plane = planar_surface(face);
+  if (!plane.has_value()) {
+    return;
+  }
+
+  constexpr double distance_tolerance = 1.0e-6;
+  std::vector<PlanarVertexCandidate> candidates;
+  candidates.reserve(static_cast<std::size_t>(vertex_map.Extent()));
+
+  for (int i = 1; i <= vertex_map.Extent(); ++i) {
+    const TopoDS_Vertex vertex = TopoDS::Vertex(vertex_map(i));
+    const gp_Pnt point = BRep_Tool::Pnt(vertex);
+    if (plane->Distance(point) > distance_tolerance) {
+      continue;
+    }
+
+    const auto [u, v] = project_to_plane_uv(*plane, point);
+    candidates.push_back(PlanarVertexCandidate{indexed_id("vertex", i), u, v});
+  }
+
+  const std::size_t candidate_count = candidates.size();
+  std::vector<PlanarVertexCandidate> hull = convex_hull(std::move(candidates));
+  if (hull.size() < 3) {
+    std::cerr
+        << "[topology_builder] unable to synthesize planar outer loop: face_id="
+        << out_face->face_id()
+        << " candidate_count=" << candidate_count
+        << '\n';
+    return;
+  }
+
+  const int loop_index = next_loop_index(*out_face);
+  auto* loop = out_face->add_loops();
+  loop->set_loop_id(indexed_id("loop", loop_index));
+  loop->set_stable_ref(out_face->stable_ref() + "/loop-" + std::to_string(loop_index));
+  loop->set_role("outer");
+  loop->set_closed(true);
+
+  for (std::size_t i = 0; i < hull.size(); ++i) {
+    const auto& start = hull[i];
+    const auto& end = hull[(i + 1) % hull.size()];
+    auto* edge = loop->add_edges();
+    const std::string edge_id = "synthetic-" + out_face->face_id() + "-loop-" + std::to_string(loop_index) + "-edge-" + std::to_string(i + 1);
+    edge->set_edge_id(edge_id);
+    edge->set_stable_ref(body_ref + "/" + edge_id);
+    edge->set_curve_type("line");
+    edge->set_start_vertex_id(start.vertex_id);
+    edge->set_end_vertex_id(end.vertex_id);
+    edge->set_orientation("forward");
+  }
+
+  std::cerr
+      << "[topology_builder] synthesized planar outer loop: face_id="
+      << out_face->face_id()
+      << " vertex_count=" << hull.size()
+      << '\n';
+}
+
 void add_face(const std::string& body_ref,
               const TopTools_IndexedMapOfShape& face_map,
               const TopTools_IndexedMapOfShape& edge_map,
@@ -562,7 +712,20 @@ void add_face(const std::string& body_ref,
     add_loops_from_face_edges_fallback(body_ref, edge_map, vertex_map, face, out_face);
   }
 
+  remove_empty_loops(out_face);
   classify_loop_roles(out_face, vertex_map, face);
+  remove_empty_loops(out_face);
+
+  // Last-resort MVP recovery path. If OCCT exposes a planar support surface but
+  // no usable outer wire, derive an outer boundary from the convex hull of body
+  // vertices lying on the same support plane. This is intentionally conservative:
+  // it only runs for planar faces with no non-empty outer loop and keeps existing
+  // inner loops such as circular holes intact.
+  if (!has_non_empty_outer_loop(*out_face)) {
+    add_synthetic_outer_loop_from_planar_hull(body_ref, vertex_map, face, out_face);
+    classify_loop_roles(out_face, vertex_map, face);
+    remove_empty_loops(out_face);
+  }
 }
 
 void add_vertices(const std::string& body_ref,
