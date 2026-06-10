@@ -10,6 +10,7 @@ Minimal C++/OpenCascade geometry-kernel-service for cccAD.
 - OpenCascade-based extrusion
 - Supported profiles:
   - ordered closed line loop
+  - ordered closed line/arc loop
   - single full circle profile
   - inner loops / holes inside a profile
 - Supported extrude directions:
@@ -25,7 +26,6 @@ Minimal C++/OpenCascade geometry-kernel-service for cccAD.
 ## Not implemented yet
 
 - `join` / `cut` booleans
-- arcs in profile loops
 - GLB export
 - STEP/STL export
 - topology summary output

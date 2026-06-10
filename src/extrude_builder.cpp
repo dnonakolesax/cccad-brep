@@ -8,11 +8,11 @@
 
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
-#include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepLib.hxx>
+#include <TopoDS_Edge.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Wire.hxx>
@@ -47,6 +47,55 @@ void log_vec3d(const char* name, const Vec3d& v) {
   std::cerr << name << "=(" << v.x << ", " << v.y << ", " << v.z << ")";
 }
 
+double normalize_arc_end_angle(double start, double end, bool clockwise) {
+  constexpr double two_pi = 2.0 * 3.141592653589793238462643383279502884;
+  if (clockwise) {
+    while (end >= start) {
+      end -= two_pi;
+    }
+  } else {
+    while (end <= start) {
+      end += two_pi;
+    }
+  }
+  return end;
+}
+
+TopoDS_Edge make_line_edge(const cccad::geometry::v1::SketchPlane& plane,
+                           const cccad::geometry::v1::LineSegment2D& line) {
+  BRepBuilderAPI_MakeEdge edge_maker(
+      point_on_plane(plane, line.start().x(), line.start().y()),
+      point_on_plane(plane, line.end().x(), line.end().y()));
+  if (!edge_maker.IsDone()) {
+    throw std::runtime_error("failed to make line edge");
+  }
+  return edge_maker.Edge();
+}
+
+TopoDS_Edge make_arc_edge(const cccad::geometry::v1::SketchPlane& plane,
+                          const cccad::geometry::v1::ArcSegment2D& arc) {
+  if (arc.radius() <= 0.0 || !std::isfinite(arc.radius())) {
+    throw std::runtime_error("arc radius must be positive and finite");
+  }
+  if (!std::isfinite(arc.start_angle_rad()) || !std::isfinite(arc.end_angle_rad())) {
+    throw std::runtime_error("arc angles must be finite");
+  }
+
+  const gp_Pnt center = point_on_plane(plane, arc.center().x(), arc.center().y());
+  const gp_Dir normal = to_gp_dir(normalize(from_proto(plane.normal()), "normal"));
+  const gp_Dir x_axis = to_gp_dir(normalize(from_proto(plane.x_axis()), "x_axis"));
+  const gp_Ax2 ax2(center, normal, x_axis);
+  const gp_Circ circ(ax2, arc.radius());
+  const double end_angle = normalize_arc_end_angle(
+      arc.start_angle_rad(), arc.end_angle_rad(), arc.clockwise());
+
+  BRepBuilderAPI_MakeEdge edge_maker(circ, arc.start_angle_rad(), end_angle);
+  if (!edge_maker.IsDone()) {
+    throw std::runtime_error("failed to make arc edge");
+  }
+  return edge_maker.Edge();
+}
+
 TopoDS_Wire make_wire_from_curves(
     const cccad::geometry::v1::SketchPlane& plane,
     const google::protobuf::RepeatedPtrField<cccad::geometry::v1::ProfileCurve>& curves,
@@ -77,33 +126,26 @@ TopoDS_Wire make_wire_from_curves(
     return wire_maker.Wire();
   }
 
-  BRepBuilderAPI_MakePolygon polygon;
+  BRepBuilderAPI_MakeWire wire_maker;
   for (const auto& curve : curves) {
-    if (!curve.has_line()) {
-      if (curve.has_arc()) {
-        throw std::runtime_error("arc segments are declared in contract but not implemented in MVP extrude");
-      }
-      if (curve.has_circle()) {
-        throw std::runtime_error("circle can only be used as a single-curve profile in MVP extrude");
-      }
+    if (curve.has_line()) {
+      wire_maker.Add(make_line_edge(plane, curve.line()));
+    } else if (curve.has_arc()) {
+      wire_maker.Add(make_arc_edge(plane, curve.arc()));
+    } else if (curve.has_circle()) {
+      throw std::runtime_error("circle can only be used as a single-curve profile in MVP extrude");
+    } else {
       throw std::runtime_error("unsupported profile curve");
     }
-
-    const auto& line = curve.line();
-    polygon.Add(point_on_plane(plane, line.start().x(), line.start().y()));
   }
 
-  // Close by last segment end. BRepBuilderAPI_MakePolygon::Close() also closes to first point,
-  // but adding the end point gives clearer failure modes for invalid ordered loops.
-  const auto& last_line = curves.Get(curves.size() - 1).line();
-  polygon.Add(point_on_plane(plane, last_line.end().x(), last_line.end().y()));
-  polygon.Close();
-
-  if (!polygon.IsDone()) {
-    throw std::runtime_error("failed to make polygon wire; profile may be open or degenerate");
+  if (!wire_maker.IsDone()) {
+    throw std::runtime_error("failed to make wire; profile may be open or degenerate");
   }
 
-  return polygon.Wire();
+  TopoDS_Wire wire = wire_maker.Wire();
+  BRepLib::BuildCurves3d(wire);
+  return wire;
 }
 
 double signed_area_2d(const google::protobuf::RepeatedPtrField<cccad::geometry::v1::ProfileCurve>& curves,
@@ -116,15 +158,30 @@ double signed_area_2d(const google::protobuf::RepeatedPtrField<cccad::geometry::
 
   double area = 0.0;
   for (const auto& curve : curves) {
-    if (!curve.has_line()) {
+    if (curve.has_line()) {
+      const auto& line = curve.line();
+      area += 0.5 * (line.start().x() * line.end().y() - line.end().x() * line.start().y());
+    } else if (curve.has_arc()) {
+      const auto& arc = curve.arc();
+      if (arc.radius() <= 0.0 || !std::isfinite(arc.radius())) {
+        throw std::runtime_error("arc radius must be positive and finite");
+      }
+      if (!std::isfinite(arc.start_angle_rad()) || !std::isfinite(arc.end_angle_rad())) {
+        throw std::runtime_error("arc angles must be finite");
+      }
+
+      const double start = arc.start_angle_rad();
+      const double end = normalize_arc_end_angle(start, arc.end_angle_rad(), arc.clockwise());
+      const double radius = arc.radius();
+      area += 0.5 * (
+          radius * arc.center().x() * (std::sin(end) - std::sin(start)) -
+          radius * arc.center().y() * (std::cos(end) - std::cos(start)) +
+          radius * radius * (end - start));
+    } else {
       throw std::runtime_error(loop_name + " contains an unsupported curve for orientation");
     }
-
-    const auto& line = curve.line();
-    area += line.start().x() * line.end().y() - line.end().x() * line.start().y();
   }
 
-  area *= 0.5;
   constexpr double eps = 1.0e-12;
   if (!std::isfinite(area) || std::abs(area) < eps) {
     throw std::runtime_error(loop_name + " must enclose a non-zero area");
