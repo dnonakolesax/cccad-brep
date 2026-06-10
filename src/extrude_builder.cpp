@@ -146,7 +146,8 @@ TopoDS_Edge make_line_edge(const cccad::geometry::v1::SketchPlane& plane,
 }
 
 TopoDS_Edge make_arc_edge(const cccad::geometry::v1::SketchPlane& plane,
-                          const cccad::geometry::v1::ArcSegment2D& arc) {
+                          const cccad::geometry::v1::ArcSegment2D& arc,
+                          Vec2d segment_start) {
   if (arc.radius() <= 0.0 || !std::isfinite(arc.radius())) {
     throw std::runtime_error("arc radius must be positive and finite");
   }
@@ -159,14 +160,23 @@ TopoDS_Edge make_arc_edge(const cccad::geometry::v1::SketchPlane& plane,
   const gp_Dir x_axis = to_gp_dir(normalize(from_proto(plane.x_axis()), "x_axis"));
   const gp_Ax2 ax2(center, normal, x_axis);
   const gp_Circ circ(ax2, arc.radius());
-  const double end_angle = normalize_arc_end_angle(
-      arc.start_angle_rad(), arc.end_angle_rad(), arc.clockwise());
+  const double original_start = arc.start_angle_rad();
+  const double original_end = normalize_arc_end_angle(original_start, arc.end_angle_rad(), arc.clockwise());
+  const bool reverse_for_profile = !almost_same_point(segment_start, arc_point_2d(arc, original_start));
+  const double profile_start = reverse_for_profile ? original_end : original_start;
+  const double profile_end = reverse_for_profile ? original_start : original_end;
+  const double edge_start = std::min(profile_start, profile_end);
+  const double edge_end = std::max(profile_start, profile_end);
 
-  BRepBuilderAPI_MakeEdge edge_maker(circ, arc.start_angle_rad(), end_angle);
+  BRepBuilderAPI_MakeEdge edge_maker(circ, edge_start, edge_end);
   if (!edge_maker.IsDone()) {
     throw std::runtime_error("failed to make arc edge");
   }
-  return edge_maker.Edge();
+  TopoDS_Edge edge = edge_maker.Edge();
+  if (profile_start > profile_end) {
+    edge.Reverse();
+  }
+  return edge;
 }
 
 std::vector<WireSegment> make_ordered_wire_segments(
@@ -297,11 +307,7 @@ TopoDS_Wire make_wire_from_curves(
     if (segment.curve->has_line()) {
       edge = make_line_edge(plane, segment.start, segment.end);
     } else if (segment.curve->has_arc()) {
-      edge = make_arc_edge(plane, segment.curve->arc());
-      const Vec2d original_start = arc_point_2d(segment.curve->arc(), segment.curve->arc().start_angle_rad());
-      if (!almost_same_point(segment.start, original_start)) {
-        edge.Reverse();
-      }
+      edge = make_arc_edge(plane, segment.curve->arc(), segment.start);
     }
     wire_maker.Add(edge);
   }
