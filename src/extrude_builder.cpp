@@ -3,8 +3,11 @@
 
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
@@ -47,6 +50,17 @@ void log_vec3d(const char* name, const Vec3d& v) {
   std::cerr << name << "=(" << v.x << ", " << v.y << ", " << v.z << ")";
 }
 
+struct Vec2d {
+  double x{};
+  double y{};
+};
+
+struct WireSegment {
+  const cccad::geometry::v1::ProfileCurve* curve{};
+  Vec2d start;
+  Vec2d end;
+};
+
 double normalize_arc_end_angle(double start, double end, bool clockwise) {
   constexpr double two_pi = 2.0 * 3.141592653589793238462643383279502884;
   if (clockwise) {
@@ -58,14 +72,73 @@ double normalize_arc_end_angle(double start, double end, bool clockwise) {
       end += two_pi;
     }
   }
+
+  const double sweep = end - start;
+  if (std::abs(sweep) > 3.141592653589793238462643383279502884) {
+    end -= std::copysign(two_pi, sweep);
+  }
   return end;
 }
 
+Vec2d arc_point_2d(const cccad::geometry::v1::ArcSegment2D& arc, double angle) {
+  return Vec2d{
+      arc.center().x() + arc.radius() * std::cos(angle),
+      arc.center().y() + arc.radius() * std::sin(angle),
+  };
+}
+
+double distance_squared(Vec2d a, Vec2d b) {
+  const double dx = a.x - b.x;
+  const double dy = a.y - b.y;
+  return dx * dx + dy * dy;
+}
+
+bool almost_same_point(Vec2d a, Vec2d b) {
+  constexpr double eps = 1.0e-7;
+  return distance_squared(a, b) <= eps * eps;
+}
+
+bool point_lies_on_segment(Vec2d p, Vec2d a, Vec2d b) {
+  constexpr double eps = 1.0e-7;
+  const double abx = b.x - a.x;
+  const double aby = b.y - a.y;
+  const double apx = p.x - a.x;
+  const double apy = p.y - a.y;
+  const double cross = abx * apy - aby * apx;
+  if (std::abs(cross) > eps) {
+    return false;
+  }
+
+  const double dot = apx * abx + apy * aby;
+  const double len_sq = abx * abx + aby * aby;
+  return dot >= -eps && dot <= len_sq + eps;
+}
+
+Vec2d trimmed_line_endpoint(Vec2d endpoint, Vec2d other, const std::vector<Vec2d>& arc_endpoints) {
+  constexpr double eps = 1.0e-7;
+  Vec2d best = endpoint;
+  double best_dist_sq = std::numeric_limits<double>::infinity();
+
+  for (const Vec2d candidate : arc_endpoints) {
+    const double dist_sq = distance_squared(endpoint, candidate);
+    if (dist_sq <= eps * eps || dist_sq >= best_dist_sq) {
+      continue;
+    }
+    if (point_lies_on_segment(candidate, endpoint, other)) {
+      best = candidate;
+      best_dist_sq = dist_sq;
+    }
+  }
+
+  return best;
+}
+
 TopoDS_Edge make_line_edge(const cccad::geometry::v1::SketchPlane& plane,
-                           const cccad::geometry::v1::LineSegment2D& line) {
+                           Vec2d start,
+                           Vec2d end) {
   BRepBuilderAPI_MakeEdge edge_maker(
-      point_on_plane(plane, line.start().x(), line.start().y()),
-      point_on_plane(plane, line.end().x(), line.end().y()));
+      point_on_plane(plane, start.x, start.y),
+      point_on_plane(plane, end.x, end.y));
   if (!edge_maker.IsDone()) {
     throw std::runtime_error("failed to make line edge");
   }
@@ -94,6 +167,97 @@ TopoDS_Edge make_arc_edge(const cccad::geometry::v1::SketchPlane& plane,
     throw std::runtime_error("failed to make arc edge");
   }
   return edge_maker.Edge();
+}
+
+std::vector<WireSegment> make_ordered_wire_segments(
+    const google::protobuf::RepeatedPtrField<cccad::geometry::v1::ProfileCurve>& curves,
+    const std::string& loop_name) {
+  std::vector<Vec2d> arc_endpoints;
+  for (const auto& curve : curves) {
+    if (!curve.has_arc()) {
+      continue;
+    }
+    const auto& arc = curve.arc();
+    if (arc.radius() <= 0.0 || !std::isfinite(arc.radius())) {
+      throw std::runtime_error("arc radius must be positive and finite");
+    }
+    if (!std::isfinite(arc.start_angle_rad()) || !std::isfinite(arc.end_angle_rad())) {
+      throw std::runtime_error("arc angles must be finite");
+    }
+    const double end_angle = normalize_arc_end_angle(
+        arc.start_angle_rad(), arc.end_angle_rad(), arc.clockwise());
+    arc_endpoints.push_back(arc_point_2d(arc, arc.start_angle_rad()));
+    arc_endpoints.push_back(arc_point_2d(arc, end_angle));
+  }
+
+  std::vector<WireSegment> segments;
+  segments.reserve(curves.size());
+  for (const auto& curve : curves) {
+    if (curve.has_line()) {
+      const auto& line = curve.line();
+      Vec2d start{line.start().x(), line.start().y()};
+      Vec2d end{line.end().x(), line.end().y()};
+      start = trimmed_line_endpoint(start, end, arc_endpoints);
+      end = trimmed_line_endpoint(end, start, arc_endpoints);
+      segments.push_back(WireSegment{&curve, start, end});
+    } else if (curve.has_arc()) {
+      const auto& arc = curve.arc();
+      const double end_angle = normalize_arc_end_angle(
+          arc.start_angle_rad(), arc.end_angle_rad(), arc.clockwise());
+      segments.push_back(WireSegment{
+          &curve,
+          arc_point_2d(arc, arc.start_angle_rad()),
+          arc_point_2d(arc, end_angle),
+      });
+    } else if (curve.has_circle()) {
+      throw std::runtime_error("circle can only be used as a single-curve profile in MVP extrude");
+    } else {
+      throw std::runtime_error("unsupported profile curve");
+    }
+  }
+
+  if (segments.empty()) {
+    throw std::runtime_error(loop_name + " must not be empty");
+  }
+
+  std::vector<WireSegment> ordered;
+  std::vector<bool> used(segments.size(), false);
+  ordered.reserve(segments.size());
+  ordered.push_back(segments.front());
+  used.front() = true;
+
+  while (ordered.size() < segments.size()) {
+    const Vec2d current = ordered.back().end;
+    bool found = false;
+    for (std::size_t i = 0; i < segments.size(); ++i) {
+      if (used[i]) {
+        continue;
+      }
+      WireSegment candidate = segments[i];
+      if (almost_same_point(current, candidate.start)) {
+        ordered.push_back(candidate);
+        used[i] = true;
+        found = true;
+        break;
+      }
+      if (almost_same_point(current, candidate.end)) {
+        std::swap(candidate.start, candidate.end);
+        ordered.push_back(candidate);
+        used[i] = true;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      throw std::runtime_error("failed to order profile curves into a closed wire");
+    }
+  }
+
+  if (!almost_same_point(ordered.back().end, ordered.front().start)) {
+    throw std::runtime_error("profile curves do not form a closed wire");
+  }
+
+  return ordered;
 }
 
 TopoDS_Wire make_wire_from_curves(
@@ -127,16 +291,19 @@ TopoDS_Wire make_wire_from_curves(
   }
 
   BRepBuilderAPI_MakeWire wire_maker;
-  for (const auto& curve : curves) {
-    if (curve.has_line()) {
-      wire_maker.Add(make_line_edge(plane, curve.line()));
-    } else if (curve.has_arc()) {
-      wire_maker.Add(make_arc_edge(plane, curve.arc()));
-    } else if (curve.has_circle()) {
-      throw std::runtime_error("circle can only be used as a single-curve profile in MVP extrude");
-    } else {
-      throw std::runtime_error("unsupported profile curve");
+  const std::vector<WireSegment> segments = make_ordered_wire_segments(curves, loop_name);
+  for (const WireSegment& segment : segments) {
+    TopoDS_Edge edge;
+    if (segment.curve->has_line()) {
+      edge = make_line_edge(plane, segment.start, segment.end);
+    } else if (segment.curve->has_arc()) {
+      edge = make_arc_edge(plane, segment.curve->arc());
+      const Vec2d original_start = arc_point_2d(segment.curve->arc(), segment.curve->arc().start_angle_rad());
+      if (!almost_same_point(segment.start, original_start)) {
+        edge.Reverse();
+      }
     }
+    wire_maker.Add(edge);
   }
 
   if (!wire_maker.IsDone()) {
