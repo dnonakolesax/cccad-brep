@@ -94,12 +94,12 @@ double distance_squared(Vec2d a, Vec2d b) {
 }
 
 bool almost_same_point(Vec2d a, Vec2d b) {
-  constexpr double eps = 1.0e-7;
+  constexpr double eps = 1.0e-5;
   return distance_squared(a, b) <= eps * eps;
 }
 
 bool point_lies_on_segment(Vec2d p, Vec2d a, Vec2d b) {
-  constexpr double eps = 1.0e-7;
+  constexpr double eps = 1.0e-5;
   const double abx = b.x - a.x;
   const double aby = b.y - a.y;
   const double apx = p.x - a.x;
@@ -115,13 +115,13 @@ bool point_lies_on_segment(Vec2d p, Vec2d a, Vec2d b) {
 }
 
 Vec2d trimmed_line_endpoint(Vec2d endpoint, Vec2d other, const std::vector<Vec2d>& arc_endpoints) {
-  constexpr double eps = 1.0e-7;
+  constexpr double eps = 1.0e-5;
   Vec2d best = endpoint;
   double best_dist_sq = std::numeric_limits<double>::infinity();
 
   for (const Vec2d candidate : arc_endpoints) {
     const double dist_sq = distance_squared(endpoint, candidate);
-    if (dist_sq <= eps * eps || dist_sq >= best_dist_sq) {
+    if (dist_sq <= eps * eps || dist_sq >= best_dist_sq || dist_sq >= distance_squared(other, candidate)) {
       continue;
     }
     if (point_lies_on_segment(candidate, endpoint, other)) {
@@ -195,10 +195,10 @@ std::vector<WireSegment> make_ordered_wire_segments(
   for (const auto& curve : curves) {
     if (curve.has_line()) {
       const auto& line = curve.line();
-      Vec2d start{line.start().x(), line.start().y()};
-      Vec2d end{line.end().x(), line.end().y()};
-      start = trimmed_line_endpoint(start, end, arc_endpoints);
-      end = trimmed_line_endpoint(end, start, arc_endpoints);
+      const Vec2d original_start{line.start().x(), line.start().y()};
+      const Vec2d original_end{line.end().x(), line.end().y()};
+      const Vec2d start = trimmed_line_endpoint(original_start, original_end, arc_endpoints);
+      const Vec2d end = trimmed_line_endpoint(original_end, original_start, arc_endpoints);
       segments.push_back(WireSegment{&curve, start, end});
     } else if (curve.has_arc()) {
       const auto& arc = curve.arc();
@@ -324,12 +324,12 @@ double signed_area_2d(const google::protobuf::RepeatedPtrField<cccad::geometry::
   }
 
   double area = 0.0;
-  for (const auto& curve : curves) {
-    if (curve.has_line()) {
-      const auto& line = curve.line();
-      area += 0.5 * (line.start().x() * line.end().y() - line.end().x() * line.start().y());
-    } else if (curve.has_arc()) {
-      const auto& arc = curve.arc();
+  const std::vector<WireSegment> segments = make_ordered_wire_segments(curves, loop_name);
+  for (const WireSegment& segment : segments) {
+    if (segment.curve->has_line()) {
+      area += 0.5 * (segment.start.x * segment.end.y - segment.end.x * segment.start.y);
+    } else if (segment.curve->has_arc()) {
+      const auto& arc = segment.curve->arc();
       if (arc.radius() <= 0.0 || !std::isfinite(arc.radius())) {
         throw std::runtime_error("arc radius must be positive and finite");
       }
@@ -337,8 +337,11 @@ double signed_area_2d(const google::protobuf::RepeatedPtrField<cccad::geometry::
         throw std::runtime_error("arc angles must be finite");
       }
 
-      const double start = arc.start_angle_rad();
-      const double end = normalize_arc_end_angle(start, arc.end_angle_rad(), arc.clockwise());
+      const double original_start = arc.start_angle_rad();
+      const double original_end = normalize_arc_end_angle(original_start, arc.end_angle_rad(), arc.clockwise());
+      const bool is_reversed = !almost_same_point(segment.start, arc_point_2d(arc, original_start));
+      const double start = is_reversed ? original_end : original_start;
+      const double end = is_reversed ? original_start : original_end;
       const double radius = arc.radius();
       area += 0.5 * (
           radius * arc.center().x() * (std::sin(end) - std::sin(start)) -
